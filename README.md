@@ -13,8 +13,19 @@ This project is used to make API for a AI Chatbot to search and make suggestions
     - creates the apps for the project: ej ```python3 manage.py startapp chatbot``` and apply migtations: ej: ```python3 manage.py migrate``` then, it does all migrations for dafaul.  a db.sqlite that can be changed to postgeSQL or mongoDB
     - in setting of the project, register the apps created before: ej: ```chatbot``` and ``` rest-framework``.
     - inside chatbot, create urls.py with a list urlpatterns= []
-    -inside mequedo_ai register the ```route: path("api/", ("nameoftheapp.urls))```
+    -inside mequedo_ai register the ```route: path("api/", ("chatbot.urls"))```
     - watch the server with ```python3 manage.py runserver ```
+
+2. API views:
+    - create  APIview in chatbot/views.py,could be  a Post method ChatbotView.
+    - create a path (ej. path('query/', ChatbotView.as_view())). in chatbot/urls.py
+3. Test views:
+    - in your browser go to http://127.0.0.1:8000/api/query/ and create the request, filling the body with the JSON for the message.
+    - you can also test the API from Postman filling the body with the JSON for the message.
+
+    
+
+
 
 
 
