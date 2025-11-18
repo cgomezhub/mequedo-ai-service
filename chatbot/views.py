@@ -23,7 +23,6 @@ try:
     # Asegúrate de usar el nombre correcto de tu base de datos y colección
     db = client.get_database("test")
     listings_collection = db.get_collection("Listing")
-    locations_collection = db.get_collection("Location")
     print("✅ Conexión a MongoDB exitosa.")
 except Exception as e:
     print(f"❌ Error al conectar a MongoDB: {e}")
@@ -83,7 +82,6 @@ class ChatbotView(APIView):
             # 1. Obtener alojamientos de MongoDB (limitado para no sobrecargar)
             listings_cursor = listings_collection.find({"isApproved": True}, {
                                                        "title":1, "price": 1, "category": 1, "slug":1, "locationId":1, "_id": 0}).limit(10)
-            locations_cursor = locations_collection.find({}, {"_id": 1, "city": 1, "state": 1})
             
             print("list-cursor:", type(listings_cursor), listings_cursor._data)
             
