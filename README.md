@@ -22,6 +22,18 @@ This project is used to make API for a AI Chatbot to search and make suggestions
 3. Test views:
     - in your browser go to http://127.0.0.1:8000/api/query/ and create the request, filling the body with the JSON for the message.
     - you can also test the API from Postman filling the body with the JSON for the message.
+==================================== commit
+
+## General Steps:
+
+1. Create a new Django project.
+2. set  Django Rest Framework.
+3. Create  a basic  endpointusing  DRF.
+4. Conect your route API  API from Next.js.
+5. Integrate  LangChain y MongoDB:
+
+
+
 
     
 
