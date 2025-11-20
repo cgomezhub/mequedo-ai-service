@@ -6,11 +6,11 @@ import certifi
 from rest_framework.response import Response
 from rest_framework import status
 import openai
+from bson import ObjectId
 
 # LangChain imports
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.prompts import PromptTemplate
-# from langchain_classic.chains import LLMChain
 
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
@@ -23,10 +23,12 @@ try:
     # Asegúrate de usar el nombre correcto de tu base de datos y colección
     db = client.get_database("test")
     listings_collection = db.get_collection("Listing")
+    # Añadimos la colección de ubicaciones
+    locations_collection = db.get_collection("Location")
     print("✅ Conexión a MongoDB exitosa.")
 except Exception as e:
     print(f"❌ Error al conectar a MongoDB: {e}")
-    listings_collection = None
+    listings_collection = locations_collection = None
 
 # 2. Inicialización del LLM (usando el modelo de NVIDIA)
 try:
@@ -45,13 +47,19 @@ except Exception as e:
 
 # 3. Plantilla de Prompt para LangChain
 template = """
-Eres un asistente de inteligencia artificial para "Mequedo", un marketplace de alquiler de alojamientos en Venezuela. Tu objetivo es ayudar a los usuarios a encontrar el mejor alojamiento según sus necesidades.
+Eres un asistente de IA para "Mequedo", un marketplace de alquiler de alojamientos en Venezuela. Tu objetivo es ayudar a los usuarios a encontrar el alojamiento ideal.
 
-Usa solamente la siguiente lista de alojamientos disponibles como contexto para responder a la pregunta del usuario. Sé amable, conversacional y servicial.
-Si la pregunta no se relaciona con la búsqueda de alojamientos o no existen datos en la lista, responde amablemente que solo puedes ayudar con temas de la plataforma Mequedo puedes usar la direccion https://mequedo.app.
+**Instrucciones:**
+1.  **Si el "Contexto de Alojamientos" NO está vacío:** Usa la información de los alojamientos para responder la pregunta del usuario de forma amable y servicial. Menciona las opciones encontradas y sus características. No formatees la respuesta como una tabla.
+2.  **Si el "Contexto de Alojamientos" ESTÁ VACÍO:** Esto significa que no se encontraron resultados. Tu respuesta debe variar según la situación:
+    *   **Si parece que el usuario mencionó una ciudad:** Es probable que haya un error tipográfico o que no tengamos alojamientos en esa ciudad. Responde amablemente, informa que no encontraste resultados para la ubicación solicitada y sugiere ciudades disponibles. Puedes decir algo como: "No encontré alojamientos en la ciudad que mencionaste. Quizás fue un error al escribir. Tenemos opciones en estas ciudades: {available_cities}. ¿Te gustaría buscar en alguna de ellas?".
+    *   **Si el usuario NO mencionó una ciudad o su pregunta es muy general:** Preséntate amablemente y haz preguntas para recopilar la información que necesitas. Responde exactamente con este texto: "¡Hola! Soy tu asistente de búsqueda en Mequedo. Para ayudarte a encontrar tu lugar ideal, por favor, indícame: ¿A qué ciudad deseas viajar? ¿Para cuántas personas? ¿Buscas una habitación o un alojamiento completo? ¿Y cuáles son tus fechas de entrada y salida?".
 
 Contexto de Alojamientos:
 {listings_context}
+
+Ciudades Disponibles:
+{available_cities}
 
 Pregunta del Usuario:
 "{user_question}"
@@ -59,8 +67,7 @@ Pregunta del Usuario:
 Respuesta del Asistente:
 """
 
-prompt = PromptTemplate(template=template, input_variables=[
-                        "listings_context", "user_question"])
+prompt = PromptTemplate(template=template, input_variables=["listings_context", "user_question", "available_cities"])
 
 
 class ChatbotView(APIView):
@@ -72,7 +79,7 @@ class ChatbotView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if listings_collection is None or llm is None:
+        if listings_collection is None or locations_collection is None or llm is None:
             return Response(
                 {"error": "El servicio de IA no está configurado correctamente. Revisa las conexiones."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -80,30 +87,79 @@ class ChatbotView(APIView):
 
         try:
             # 1. Obtener alojamientos de MongoDB (limitado para no sobrecargar)
-            listings_cursor = listings_collection.find({"isApproved": True}, {
-                                                       "title":1, "price": 1, "category": 1, "slug":1, "locationId":1, "_id": 0}).limit(10)
-            
-            print("list-cursor:", type(listings_cursor), listings_cursor._data)
-            
-            listings_context = "\n".join(
-                [f"- Título: {l.get('title', 'N/A')}, Categoría: {l.get('category', 'N/A')}, Precio: ${l.get('price', 0)}" for l in listings_cursor] )
+            # Paso 1: Buscar si el mensaje del usuario contiene una ciudad de nuestra BD
+            # y crear un mapa de ubicaciones para enriquecer el contexto.
+            found_location_ids = [] # Usaremos una lista para todas las coincidencias
+            all_locations = list(locations_collection.find({}, {"_id": 1, "city": 1}))
+            locations_map = {loc['_id']: loc['city'] for loc in all_locations}
+            print(f"Ubicaciones disponibles en la BD: {locations_map}")
+            user_message_lower = user_message.lower()
 
-            # 3. Crear y ejecutar la cadena de LangChain
-            # llm_chain = LLMChain(prompt=prompt, llm=llm)
+            for loc in all_locations:
+                # Si la ciudad de la BD está en el mensaje del usuario...
+                if loc['city'].lower() in user_message_lower:
+                    # ...la añadimos a nuestra lista de IDs.
+                    found_location_ids.append(loc['_id'])
+            
+            if found_location_ids:
+                print(f"IDs de ubicación encontrados para la ciudad: {found_location_ids}")
+            
+            # Paso 2: Construir el filtro de búsqueda dinámicamente
+            listing_filter = {"isApproved": True}
+            if found_location_ids:
+                # Usamos el operador $in para buscar en todos los IDs encontrados
+                listing_filter["locationId"] = {"$in": found_location_ids}
+                
+                print(f"Filtro de búsqueda aplicado: {listing_filter}")
+
+            # Paso 3: Realizar la consulta a la base de datos con el filtro
+                listings_cursor = listings_collection.find(listing_filter, {
+                    "title": 1, "price": 1, "category": 1, "slug": 1, "locationId": 1, "_id": 0
+                }).limit(5)
+            else:
+                # Si no se encontró ninguna ciudad, devolvemos un contexto vacío
+                listings_cursor = []
+            
+            listings_list = list(listings_cursor)
+            print(f"Alojamientos encontrados tras el filtro: {len(listings_list)}, listings_list: {listings_list}")
+            
+            # Enriquecer listings_list con el nombre de la ciudad para el frontend
+            enriched_listings_list = []
+            for listing in listings_list:
+                listing_with_city = listing.copy()
+                listing_with_city['city'] = locations_map.get(listing.get('locationId'), 'N/A')
+                enriched_listings_list.append(listing_with_city)
+                
+            serialable_enriched_listings_list = []
+            for l in enriched_listings_list:
+                serialable_listing = l.copy()
+                if isinstance(serialable_listing.get('locationId'), ObjectId):
+                    serialable_listing['locationId'] = str(serialable_listing['locationId'])
+                serialable_enriched_listings_list.append(serialable_listing)
+
+            # Paso 4: Construir el contexto para el LLM
+            listings_context = "\n".join([
+                f"- Título: {l.get('title', 'N/A')}, Categoría: {l.get('category', 'N/A')}, Precio: ${l.get('price', 0)}, Ubicación: {locations_map.get(l.get('locationId'), 'N/A')}" for l in listings_list
+            ])
+            # Paso 5: Crear y ejecutar la cadena de LangChain
             print("listings_context:", listings_context)
+            
+            available_cities_str = ", ".join(locations_map.values())
+            print("Ciudades disponibles:", available_cities_str)
             print("user_message:", user_message)
 
             chain = prompt | llm
 
-            # bot_response = llm_chain.run(listings_context=listings_context, user_question=user_message)
             bot_response = chain.invoke({
+                "available_cities": available_cities_str,
                 "listings_context": listings_context,
                 "user_question": user_message
-            })
+            }) # Esta es la respuesta de texto del LLM
 
             print("bot_response:", bot_response.content)
 
-            return Response({"response": bot_response.content},status=status.HTTP_200_OK)
+            # Devolver tanto la respuesta de texto del LLM como los datos de los alojamientos enriquecidos
+            return Response({"response": bot_response.content, "listings": serialable_enriched_listings_list}, status=status.HTTP_200_OK)
 
         except openai.NotFoundError:
             print(f"❌ Error: El modelo de IA no fue encontrado. Revisa el nombre del modelo o la URL base de la API.")
