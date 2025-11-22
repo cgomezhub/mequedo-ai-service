@@ -1,0 +1,1 @@
+web: gunicorn mequedo_ai.wsgi --log-file -

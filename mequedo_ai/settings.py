@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
-
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -20,13 +20,34 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-9yud#pa!$eb&&d_y^ttp(vs3f6s$a1hefk-^@_6krxgn#bc3v)'
+# Lee la clave secreta desde las variables de entorno de Railway.
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'una-clave-secreta-de-desarrollo-insegura')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# DEBUG se deshabilita en producción por defecto.
+DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = []
+# Railway proporciona la URL pública en una variable de entorno.
+# También puedes añadir 'localhost' y '127.0.0.1' para desarrollo local.
+RAILWAY_URL = os.getenv('RAILWAY_STATIC_URL')
+ALLOWED_HOSTS = [
+    'localhost', 
+    '127.0.0.1',
+    'ai-api.mequedo.app', # Tu nuevo subdominio para la IA
+]
+if RAILWAY_URL:
+    # Añadimos el dominio de Railway para las comprobaciones de salud de la plataforma
+    ALLOWED_HOSTS.append(RAILWAY_URL) 
 
+# Es buena práctica confiar en el dominio de despliegue para evitar problemas de CSRF.
+CSRF_TRUSTED_ORIGINS = [
+    'http://localhost:3000', # URL de tu frontend Next.js en desarrollo
+    'http://127.0.0.1:3000',
+    'https://mequedo.app', # Tu dominio principal del frontend
+    'https://www.mequedo.app', # Tu dominio con www
+]
+if RAILWAY_URL:
+    CSRF_TRUSTED_ORIGINS.append(f'https://{RAILWAY_URL}') # Para las comprobaciones de salud
 
 # Application definition
 
@@ -37,12 +58,15 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders', # Añadir corsheaders
     'rest_framework',
     'chatbot',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware', # Para archivos estáticos si los usas
+    'corsheaders.middleware.CorsMiddleware', # Añadir middleware de CORS
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -50,6 +74,11 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+# --- Configuración de CORS ---
+# Permitir que cualquier dominio se conecte. Para mayor seguridad, puedes reemplazar '*'
+# con la URL de tu frontend (ej: 'https://mi-frontend.up.railway.app')
+CORS_ALLOW_ALL_ORIGINS = True
 
 ROOT_URLCONF = 'mequedo_ai.urls'
 
