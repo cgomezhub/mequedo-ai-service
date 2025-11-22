@@ -41,8 +41,8 @@ try:
         top_p=1,
         max_tokens=1000,
     ).with_config({
-        "timeout": 20,  # Aumentamos el timeout a 20 segundos para dar más margen al LLM
-        "max_retries": 2, # Reintenta la llamada hasta 2 veces en caso de fallo
+        "timeout": 60,  # Aumentamos el timeout a 60 segundos para dar más margen al LLM
+        "max_retries": 1, # Reintenta la llamada 1 vez en caso de fallo
     })
 
     print("✅ LLM de NVIDIA inicializado.")
@@ -184,6 +184,11 @@ class ChatbotView(APIView):
                 "user_question": user_message
             })
 
+            # Si la respuesta del LLM es un error o no es lo que esperamos, lo capturamos
+            if not hasattr(bot_response, 'content'):
+                 raise Exception("La respuesta del LLM no tiene el formato esperado.")
+
+
             # **VALIDACIÓN CRÍTICA DE LA RESPUESTA DEL LLM**
             # Si la respuesta está vacía o solo contiene espacios, es un fallo.
             if not bot_response.content or not bot_response.content.strip():
@@ -200,7 +205,9 @@ class ChatbotView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         except Exception as e:
+            # Capturamos cualquier error (incluidos timeouts) y devolvemos un JSON amigable
+            print(f"🔥🔥🔥 Error en la vista del chatbot: {e}") # Log para nosotros
             return Response(
-                {"error": "Ocurrió un error al generar la respuesta."},
+                {"error": "El asistente de IA está tardando mucho en responder o ha ocurrido un error. Por favor, inténtalo de nuevo en unos momentos."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
