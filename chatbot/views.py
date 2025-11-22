@@ -211,3 +211,10 @@ class ChatbotView(APIView):
                 {"error": "El asistente de IA está tardando mucho en responder o ha ocurrido un error. Por favor, inténtalo de nuevo en unos momentos."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+class HealthCheckView(APIView):
+    """
+    Vista simple que devuelve un 200 OK. Usada por Railway para el health check.
+    """
+    def get(self, request, *args, **kwargs):
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
