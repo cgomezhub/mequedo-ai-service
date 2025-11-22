@@ -1,1 +1,1 @@
-web: gunicorn mequedo_ai.wsgi --log-file - --timeout 120
+web: gunicorn mequedo_ai.wsgi --log-file - --timeout 60

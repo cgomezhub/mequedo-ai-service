@@ -23,7 +23,7 @@ load_dotenv()
 try:
     client = MongoClient(os.getenv("DATABASE_URL"), tlsCAFile=certifi.where())
     # Asegúrate de usar el nombre correcto de tu base de datos y colección
-    db = client.get_database("test")
+    db = client.get_database("mequedo_prod")  
     listings_collection = db.get_collection("Listing")
     # Añadimos la colección de ubicaciones
     locations_collection = db.get_collection("Location")
@@ -35,13 +35,13 @@ except Exception as e:
 # 2. Inicialización del LLM (usando el modelo de NVIDIA)
 try:
     llm = ChatNVIDIA(
-        model="openai/gpt-oss-20b",
+        model="meta/llama3-8b-instruct", # <-- CAMBIO DE MODELO: Más rápido y eficiente
         nvidia_api_key=os.getenv("NVIDIA_API_KEY"),
-        temperature=1,
-        top_p=1,
-        max_tokens=1000,
+        temperature=0.2, # Reducimos la creatividad para respuestas más directas
+        top_p=0.7,
+        max_tokens=500, # Reducimos el máximo de tokens para respuestas más cortas
     ).with_config({
-        "timeout": 60,  # Aumentamos el timeout a 60 segundos para dar más margen al LLM
+        "timeout": 25,  # Un timeout razonable de 25 segundos
         "max_retries": 1, # Reintenta la llamada 1 vez en caso de fallo
     })
 
@@ -129,6 +129,8 @@ class ChatbotView(APIView):
             all_locations = list(locations_collection.find({}, {"_id": 1, "city": 1}))
             locations_map = {loc['_id']: loc['city'] for loc in all_locations}
             available_cities_str = ", ".join(sorted(list(set(locations_map.values()))))
+            
+            # print(f"🌍 Ciudades disponibles: {available_cities_str}")
 
             # Buscar IDs de ubicación que coincidan con el mensaje del usuario
             found_location_ids = []
@@ -142,7 +144,7 @@ class ChatbotView(APIView):
            
 
             # --- Paso 2: Lógica de respuesta temprana si no se encuentra una ciudad ---
-
+            # print(f"🔍 Filtros extraídos - Locations: {found_location_ids}, Price: {price_query}")
             # Si no se especifica una ciudad, no podemos buscar. Devolvemos una respuesta guiada.
             if not found_location_ids:
                 bot_response_content = f"No he podido identificar una ciudad en tu búsqueda. Tenemos opciones en estas ciudades: {available_cities_str}. ¿En cuál de ellas te gustaría buscar?"
