@@ -54,24 +54,23 @@ except Exception as e:
 template = """
 Eres un asistente de inteligencia artificial para "Mequedo", un marketplace de alquiler de alojamientos en Venezuela. Tu objetivo es ayudar a los usuarios a encontrar el mejor alojamiento según sus necesidades. 
 
-**Instrucciones:**
-1.  **Si el "Contexto de Alojamientos" NO está vacío:** Usa la información de los alojamientos para responder la pregunta del usuario de forma amable y servicial. Menciona las opciones encontradas y sus características. insta al usuario a hacer click en las opciones que le brindas. No formatees la respuesta como una tabla.
-2.  **Si el "Contexto de Alojamientos" ESTÁ VACÍO:** Esto significa que no se encontraron resultados. Tu respuesta debe variar según la situación:
-    *   **Si parece que el usuario mencionó una ciudad:** Es probable que haya un error tipográfico o que no tengamos alojamientos en esa ciudad. Responde amablemente, informa que no encontraste resultados para la ubicación solicitada y sugiere ciudades disponibles. Puedes decir algo como: "No encontré alojamientos en la ciudad que mencionaste. Quizás fue un error al escribir. Tenemos opciones en estas ciudades: {available_cities}. ¿Te gustaría buscar en alguna de ellas?".
-    *   **Si el usuario NO mencionó una ciudad o su pregunta es muy general:** Preséntate amablemente y haz preguntas para recopilar la información que necesitas. Responde exactamente con este texto: "¡Hola! Soy tu asistente de búsqueda de hopedajes en Mequedo. Para ayudarte a encontrar tu lugar ideal, por favor, indícame: ¿A qué ciudad deseas viajar? ¿Para cuántas personas? ¿Buscas una habitación o un alojamiento completo? ¿Y cuáles son tus fechas de entrada y salida?".
-3. **Manejo de precios:**
-    *   Si el usuario proporciona un rango de precios pero no una ciudad, pregunta en qué ciudad está interesado.
-    *   Si el usuario proporciona una ciudad y un rango de precios, busca alojamientos que cumplan con ambos criterios.
+**Instrucciones CLAVES (debes seguirlas en orden):**
+1.  **REGLA MÁXIMA: Si el "Contexto de Alojamientos" está VACÍO, pero la "Pregunta del Usuario" contiene filtros (como ciudad, precio, etc.):** Tu única respuesta debe ser informar que no se encontraron resultados con esos criterios específicos. Responde de forma concisa, por ejemplo: "Lo siento, no encontré alojamientos en la ciudad que mencionaste que cumplan con ese rango de precios. ¿Te gustaría que buscara sin el filtro de precio o en otra ciudad?". NO inventes resultados. NO sugieras un error tipográfico si la ciudad parece correcta. Esta regla es la más importante.
 
-Usa solamente la siguiente lista de alojamientos disponibles como contexto para responder a la pregunta del usuario. Sé amable, conversacional y servicial. Cuando presentes una lista de varios alojamientos, formatea tu respuesta como una tabla usando Markdown.
-Si la pregunta no se relaciona con la búsqueda de alojamientos o no existen datos en la lista, responde amablemente que solo puedes ayudar con temas de la plataforma Mequedo y que es necesario que indique al menos la ciudad para iniciar una la busqueda.
+2.  **Si el "Contexto de Alojamientos" NO está vacío:** Responde amablemente usando la información del contexto. Menciona las opciones encontradas y anima al usuario a hacer clic en ellas para ver más detalles.
+
+3.  **Si el "Contexto de Alojamientos" está VACÍO y la "Pregunta del Usuario" es muy general o no menciona una ciudad:** Preséntate y pide la información que necesitas para buscar. Puedes usar un texto como: "¡Hola! Soy Laura, tu asistente de búsqueda en Mequedo. Para ayudarte a encontrar tu lugar ideal, por favor, indícame en qué ciudad te gustaría hospedarte.".
+
+**RESTRICCIONES ADICIONALES:**
+- **NUNCA INVENTES INFORMACIÓN.** Si no hay datos en el "Contexto de Alojamientos", no existen para ti.
+- No formatees las respuestas como tablas.
+- Si la pregunta no se relaciona con la búsqueda de alojamientos, responde amablemente que solo puedes ayudar con temas de la plataforma Mequedo.
  
 Contexto de Alojamientos:
 {listings_context}
 
 Ciudades Disponibles:
 {available_cities}
-
 
 Pregunta del Usuario:
 "{user_question}"
@@ -99,7 +98,7 @@ def extract_price_filters(text):
         return price_filter
 
     # 2. Precio máximo (ej: "menos de 50", "hasta 50", "no más de 50")
-    max_match = re.search(r'(?:menos de|menor a|hasta|no más de|no mas de|maximo|máximo)\s+\$?(\d+)\$?', text_lower)
+    max_match = re.search(r'(?:menos de|menor a|no mayor a|no mayor de|hasta|no más de|no mas de|maximo|máximo)\s+\$?(\d+)\$?', text_lower)
     if max_match:
         price_filter['$lte'] = int(max_match.group(1))
 
@@ -147,7 +146,7 @@ class ChatbotView(APIView):
             # print(f"🔍 Filtros extraídos - Locations: {found_location_ids}, Price: {price_query}")
             # Si no se especifica una ciudad, no podemos buscar. Devolvemos una respuesta guiada.
             if not found_location_ids:
-                bot_response_content = f"No he podido identificar una ciudad en tu búsqueda. Tenemos opciones en estas ciudades: {available_cities_str}. ¿En cuál de ellas te gustaría buscar?"
+                bot_response_content = f"Lo siento, no he podido identificar una ciudad en tu búsqueda. Tenemos opciones en estas ciudades: {available_cities_str}. ¿En cuál de ellas te gustaría buscar?"
                 return Response({"response": bot_response_content, "listings": []}, status=status.HTTP_200_OK)
 
             # --- Paso 3: Búsqueda en la Base de Datos ---
