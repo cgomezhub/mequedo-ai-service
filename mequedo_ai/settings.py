@@ -21,7 +21,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # Lee la clave secreta desde las variables de entorno de Railway.
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'una-clave-secreta-de-desarrollo-insegura')
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY',
+                       'una-clave-secreta-de-desarrollo-insegura')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # DEBUG se deshabilita en producción por defecto.
@@ -31,23 +32,35 @@ DEBUG = os.getenv('DEBUG', 'False') == 'True'
 # También puedes añadir 'localhost' y '127.0.0.1' para desarrollo local.
 RAILWAY_URL = os.getenv('RAILWAY_STATIC_URL')
 ALLOWED_HOSTS = [
-    'localhost', 
+    'localhost',
     '127.0.0.1',
-    'ai-api.mequedo.app', # Tu nuevo subdominio para la IA
+    'ai-api.mequedo.app',  # Tu nuevo subdominio para la IA
 ]
 if RAILWAY_URL:
     # Añadimos el dominio de Railway para las comprobaciones de salud de la plataforma
-    ALLOWED_HOSTS.append(RAILWAY_URL) 
+    ALLOWED_HOSTS.append(RAILWAY_URL)
 
 # Es buena práctica confiar en el dominio de despliegue para evitar problemas de CSRF.
 CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:3000', # URL de tu frontend Next.js en desarrollo
-    'http://127.0.0.1:3000',
-    'https://mequedo.app', # Tu dominio principal del frontend
-    'https://www.mequedo.app', # Tu dominio con www
+    'http://localhost:3001',  # URL de tu frontend Next.js en desarrollo
+    'http://127.0.0.1:3001',
+    'https://mequedo.app',  # Tu dominio principal del frontend
+    'https://www.mequedo.app',  # Tu dominio con www
 ]
+
+CORS_ALLOW_ALL_ORIGINS = False
+
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
+    'https://mequedo.app',
+    'https://www.mequedo.app',
+]
+
+
 if RAILWAY_URL:
-    CSRF_TRUSTED_ORIGINS.append(f'https://{RAILWAY_URL}') # Para las comprobaciones de salud
+    # Para las comprobaciones de salud
+    CSRF_TRUSTED_ORIGINS.append(f'https://{RAILWAY_URL}')
 
 # Application definition
 
@@ -58,7 +71,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'corsheaders', # Añadir corsheaders
+    'corsheaders',  # Añadir corsheaders
     'rest_framework',
     'chatbot',
 ]
@@ -66,7 +79,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
-    'corsheaders.middleware.CorsMiddleware', # Añadir middleware de CORS
+    'corsheaders.middleware.CorsMiddleware',  # Añadir middleware de CORS
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -78,7 +91,7 @@ MIDDLEWARE = [
 # --- Configuración de CORS ---
 # Permitir que cualquier dominio se conecte. Para mayor seguridad, puedes reemplazar '*'
 # con la URL de tu frontend (ej: 'https://mi-frontend.up.railway.app')
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS_ALLOW_ALL_ORIGINS = True
 
 ROOT_URLCONF = 'mequedo_ai.urls'
 
@@ -151,3 +164,78 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# Rate limiting
+REST_FRAMEWORK = {
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '10/minute',
+    }
+}
+
+# Logging mejorado
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'chatbot': {  # Tu app específica
+            'handlers': ['console'],
+            'level': 'DEBUG' if DEBUG else 'INFO',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+}
+
+
+# ============ SEGURIDAD ADICIONAL ============
+
+# Protección contra clickjacking
+X_FRAME_OPTIONS = 'DENY'
+
+# ============ SEGURIDAD ADICIONAL ============
+
+# Protección contra clickjacking
+X_FRAME_OPTIONS = 'DENY'
+
+
+#! Activar las siguientes lineas en producción
+if not DEBUG:
+
+    # pass
+    # Forzar HTTPS
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    # HSTS (HTTP Strict Transport Security)
+    SECURE_HSTS_SECONDS = 31536000  # 1 año
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    # Protección XSS
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
