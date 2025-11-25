@@ -78,7 +78,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'chatbot.middleware.HealthCheckMiddleware',
+    'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # Añadir middleware de CORS
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -221,9 +222,6 @@ X_FRAME_OPTIONS = 'DENY'
 
 #! Activar las siguientes lineas en producción
 if not DEBUG:
-    # pass
-    # Forzar HTTPS
-    SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     # HSTS (HTTP Strict Transport Security)
