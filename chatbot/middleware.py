@@ -13,7 +13,7 @@ class HealthCheckMiddleware:
 
     def __call__(self, request):
         # Si es el health check, no hacer redirect
-        if request.path == '/api/health/':
+        if request.path == '/':
             return self.get_response(request)
 
         # Para todas las demás rutas, aplicar HTTPS redirect si está configurado
