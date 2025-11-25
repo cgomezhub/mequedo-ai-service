@@ -113,9 +113,9 @@ try:
     db = client.get_database("mequedo_prod")
     listings_collection = db.get_collection("Listing")
     locations_collection = db.get_collection("Location")
-    logger.info("✅ Conexión a MongoDB exitosa.")
+    print("✅ Conexión a MongoDB exitosa.")
 except Exception as e:
-    logger.error(f"❌ Error al conectar a MongoDB: {e}")
+    print(f"❌ Error al conectar a MongoDB: {e}")
     listings_collection = locations_collection = None
 
 # 2. Inicialización del LLM (usando el modelo de NVIDIA)
@@ -130,9 +130,9 @@ try:
         "timeout": 25,
         "max_retries": 1,
     })
-    logger.info("✅ LLM de NVIDIA inicializado.")
+    print("✅ LLM de NVIDIA inicializado.")
 except Exception as e:
-    logger.error(f"❌ Error al inicializar el LLM de NVIDIA: {e}")
+    print(f"❌ Error al inicializar el LLM de NVIDIA: {e}")
     llm = None
 
 # 3. Plantilla de Prompt para LangChain
@@ -366,4 +366,22 @@ class HealthCheckView(APIView):
     """
 
     def get(self, request, *args, **kwargs):
-        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+        status_info = {
+            "status": "ok",
+            "mongodb": "disconnected",
+            "llm": "not_initialized"
+        }
+
+        # Verificar MongoDB
+        if listings_collection is not None and locations_collection is not None:
+            status_info["mongodb"] = "connected"
+
+        # Verificar LLM
+        if llm is not None:
+            status_info["llm"] = "initialized"
+
+        # Si algo falla, devolver 503
+        if status_info["mongodb"] == "disconnected" or status_info["llm"] == "not_initialized":
+            return Response(status_info, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        return Response(status_info, status=status.HTTP_200_OK)

@@ -218,15 +218,9 @@ LOGGING = {
 # Protección contra clickjacking
 X_FRAME_OPTIONS = 'DENY'
 
-# ============ SEGURIDAD ADICIONAL ============
-
-# Protección contra clickjacking
-X_FRAME_OPTIONS = 'DENY'
-
 
 #! Activar las siguientes lineas en producción
 if not DEBUG:
-
     # pass
     # Forzar HTTPS
     SECURE_SSL_REDIRECT = True
