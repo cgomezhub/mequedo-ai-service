@@ -1,0 +1,246 @@
+import os
+import requests
+import logging
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class WhatsAppService:
+    """
+    Servicio para interactuar con WhatsApp Cloud API.
+    """
+
+    def __init__(self):
+        self.phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+        self.access_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
+        self.api_version = "v21.0"
+        self.base_url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}"
+
+        if not self.phone_number_id or not self.access_token:
+            logger.error("❌ WhatsApp credentials not configured")
+
+    def _get_headers(self) -> Dict[str, str]:
+        """Retorna los headers necesarios para las peticiones a la API."""
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def send_text_message(self, to: str, message: str) -> bool:
+        """
+        Envía un mensaje de texto a un número de WhatsApp.
+
+        Args:
+            to: Número de teléfono del destinatario (con código de país, sin +)
+            message: Texto del mensaje a enviar
+
+        Returns:
+            bool: True si el mensaje se envió exitosamente, False en caso contrario
+        """
+        if not self.phone_number_id or not self.access_token:
+            logger.error("❌ WhatsApp not configured")
+            return False
+
+        url = f"{self.base_url}/messages"
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "text",
+            "text": {"preview_url": True, "body": message},
+        }
+
+        try:
+            response = requests.post(
+                url, headers=self._get_headers(), json=payload, timeout=10
+            )
+            response.raise_for_status()
+            logger.info(f"✅ Message sent to {to}")
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Error sending message to {to}: {str(e)}")
+            if hasattr(e, "response") and e.response is not None:
+                logger.error(f"Response: {e.response.text}")
+            return False
+
+    def send_interactive_list(
+        self, to: str, body_text: str, button_text: str, sections: List[Dict]
+    ) -> bool:
+        """
+        Envía un mensaje interactivo con lista de opciones.
+
+        Args:
+            to: Número de teléfono del destinatario
+            body_text: Texto principal del mensaje
+            button_text: Texto del botón para abrir la lista
+            sections: Lista de secciones con opciones
+
+        Returns:
+            bool: True si se envió exitosamente
+        """
+        if not self.phone_number_id or not self.access_token:
+            logger.error("❌ WhatsApp not configured")
+            return False
+
+        url = f"{self.base_url}/messages"
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": body_text},
+                "action": {"button": button_text, "sections": sections},
+            },
+        }
+
+        try:
+            response = requests.post(
+                url, headers=self._get_headers(), json=payload, timeout=10
+            )
+            response.raise_for_status()
+            logger.info(f"✅ Interactive list sent to {to}")
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Error sending interactive list to {to}: {str(e)}")
+            if hasattr(e, "response") and e.response is not None:
+                logger.error(f"Response: {e.response.text}")
+            return False
+
+    def mark_message_as_read(self, message_id: str) -> bool:
+        """
+        Marca un mensaje como leído.
+
+        Args:
+            message_id: ID del mensaje a marcar como leído
+
+        Returns:
+            bool: True si se marcó exitosamente
+        """
+        if not self.phone_number_id or not self.access_token:
+            return False
+
+        url = f"{self.base_url}/messages"
+        payload = {
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": message_id,
+        }
+
+        try:
+            response = requests.post(
+                url, headers=self._get_headers(), json=payload, timeout=10
+            )
+            response.raise_for_status()
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Error marking message as read: {str(e)}")
+            return False
+
+
+class MessageFormatter:
+    """
+    Formateador de mensajes para WhatsApp.
+    Convierte respuestas del chatbot y listados a formato compatible con WhatsApp.
+    """
+
+    MAX_MESSAGE_LENGTH = 4096  # Límite de WhatsApp
+    MAX_LIST_ITEMS = 10  # Límite de items en lista interactiva
+
+    @staticmethod
+    def format_text_message(text: str) -> str:
+        """
+        Formatea un mensaje de texto para WhatsApp.
+        Limita la longitud y ajusta el formato.
+        Args:
+            text: Texto a formatear
+
+        Returns:
+            str: Texto formateado
+        """
+        # Limitar longitud
+        if len(text) > MessageFormatter.MAX_MESSAGE_LENGTH:
+            text = text[: MessageFormatter.MAX_MESSAGE_LENGTH - 3] + "..."
+
+        return text
+
+    @staticmethod
+    def format_listings_as_text(listings: List[Dict], response_text: str) -> str:
+        """
+        Formatea los listados como texto simple para WhatsApp.
+
+        Args:
+            listings: Lista de hospedajes
+            response_text: Texto de respuesta del chatbot
+
+        Returns:
+            str: Mensaje formateado con listados
+        """
+        if not listings:
+            return MessageFormatter.format_text_message(response_text)
+
+        # Construir mensaje con listados
+        message = f"{response_text}\n\n"
+
+        for idx, listing in enumerate(listings[:MessageFormatter.MAX_LIST_ITEMS], 1):
+            title = listing.get("title", "Sin título")
+            price = listing.get("price", 0)
+            city = listing.get("city", "N/A")
+            category = listing.get("category", "N/A")
+            slug = listing.get("slug", "")
+
+            message += f"\n*{idx}. {title}*\n"
+            message += f"💰 Precio: ${price}\n"
+            message += f"📍 Ciudad: {city}\n"
+            message += f"🏠 Categoría: {category}\n"
+
+            # Agregar link si existe slug
+            if slug:
+                message += f"🔗 Ver más: https://mequedo.app/listing/{slug}\n"
+
+        if len(listings) > MessageFormatter.MAX_LIST_ITEMS:
+            message += f"\n_...y {len(listings) - MessageFormatter.MAX_LIST_ITEMS} más opciones_"
+
+        return MessageFormatter.format_text_message(message)
+
+    @staticmethod
+    def create_listings_interactive_sections(listings: List[Dict]) -> List[Dict]:
+        """
+        Crea secciones para mensaje interactivo con listados.
+
+        Args:
+            listings: Lista de hospedajes
+
+        Returns:
+            List[Dict]: Secciones formateadas para WhatsApp
+        """
+        if not listings:
+            return []
+
+        rows = []
+        for idx, listing in enumerate(listings[:MessageFormatter.MAX_LIST_ITEMS]):
+            title = listing.get("title", "Sin título")
+            price = listing.get("price", 0)
+            city = listing.get("city", "N/A")
+            slug = listing.get("slug", "")
+
+            # Crear ID único para la opción
+            option_id = f"listing_{idx}_{slug[:20]}" if slug else f"listing_{idx}"
+
+            # Descripción limitada a 72 caracteres
+            description = f"${price} - {city}"[:72]
+
+            rows.append(
+                {
+                    "id": option_id,
+                    "title": title[:24],  # Máximo 24 caracteres
+                    "description": description,
+                }
+            )
+
+        # Crear sección
+        sections = [{"title": "Opciones disponibles", "rows": rows}]
+
+        return sections

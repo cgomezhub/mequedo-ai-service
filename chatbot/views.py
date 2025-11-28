@@ -238,6 +238,125 @@ def extract_price_filters(text):
     return price_filter
 
 
+def process_chatbot_message(user_message: str) -> dict:
+    """
+    Procesa un mensaje del usuario y retorna la respuesta del chatbot.
+    Esta función puede ser llamada desde la API REST o desde WhatsApp.
+
+    Args:
+        user_message: Mensaje del usuario
+
+    Returns:
+        dict: {
+            "response": str,  # Respuesta del chatbot
+            "listings": list,  # Lista de hospedajes encontrados
+            "error": str (opcional)  # Mensaje de error si algo falla
+        }
+    """
+    # ============ VALIDACIÓN 1: Mensaje vacío ============
+    if not user_message or not isinstance(user_message, str):
+        return {"error": "El mensaje es requerido y debe ser texto."}
+
+    # ============ VALIDACIÓN 2: Longitud máxima ============
+    if len(user_message) > MAX_MESSAGE_LENGTH:
+        return {"error": f"El mensaje es demasiado largo (máximo {MAX_MESSAGE_LENGTH} caracteres)."}
+
+    # ============ VALIDACIÓN 3: Detección de Prompt Injection ============
+    if contains_suspicious_content(user_message):
+        logger.warning(
+            f"⚠️ Intento de prompt injection detectado: {user_message[:100]}")
+        return {"error": "Mensaje no permitido."}
+
+    # ============ VALIDACIÓN 4: Servicios disponibles ============
+    if listings_collection is None or locations_collection is None or llm is None:
+        logger.error("❌ Servicios no configurados correctamente")
+        return {"error": "El servicio está temporalmente no disponible."}
+
+    try:
+        # ============ SANITIZAR MENSAJE ============
+        sanitized_message = sanitize_message(user_message)
+
+        # --- Paso 1: Extraer información de la pregunta del usuario ---
+        all_locations = list(
+            locations_collection.find({}, {"_id": 1, "city": 1}))
+        locations_map = {loc['_id']: loc['city'] for loc in all_locations}
+        available_cities_str = ", ".join(
+            sorted(list(set(locations_map.values()))))
+
+        # Buscar IDs de ubicación que coincidan con el mensaje del usuario
+        found_location_ids = []
+        user_message_lower = sanitized_message.lower()
+        for loc in all_locations:
+            if loc['city'].lower() in user_message_lower:
+                # ============ VALIDAR ObjectId ============
+                if is_valid_objectid(loc['_id']):
+                    found_location_ids.append(loc['_id'])
+
+        # Extraer filtros de precio del mensaje del usuario
+        price_query = extract_price_filters(sanitized_message)
+
+        # --- Paso 2: Búsqueda en la Base de Datos ---
+        listings_list = []
+        if found_location_ids:
+            listing_filter = {"isApproved": True}
+            listing_filter["locationId"] = {"$in": found_location_ids}
+            if price_query:
+                listing_filter["price"] = price_query
+
+            listings_cursor = listings_collection.find(listing_filter, {
+                "title": 1, "price": 1, "category": 1, "slug": 1, "locationId": 1, "_id": 0
+            }).limit(MAX_LISTINGS_RETURN)
+            listings_list = list(listings_cursor)
+
+        # --- Paso 3: Preparar datos para el LLM y el Frontend ---
+        serializable_enriched_listings = []
+        for listing in listings_list:
+            enriched_listing = listing.copy()
+            enriched_listing['city'] = locations_map.get(
+                listing.get('locationId'), 'N/A')
+            if isinstance(enriched_listing.get('locationId'), ObjectId):
+                enriched_listing['locationId'] = str(
+                    enriched_listing['locationId'])
+            serializable_enriched_listings.append(enriched_listing)
+
+        listings_context = "\n".join([
+            f"- Título: {l.get('title', 'N/A')}, Categoría: {l.get('category', 'N/A')}, Precio: ${l.get('price', 0)}, Ubicación: {l.get('city', 'N/A')}"
+            for l in serializable_enriched_listings
+        ])
+
+        # --- Paso 4: Ejecutar el LLM ---
+        chain = prompt | llm
+        bot_response = chain.invoke({
+            "available_cities": available_cities_str,
+            "listings_context": listings_context,
+            "user_question": sanitized_message
+        })
+
+        # ============ VALIDACIÓN DE RESPUESTA DEL LLM ============
+        if not hasattr(bot_response, 'content') or not bot_response.content or not bot_response.content.strip():
+            logger.error("❌ Respuesta vacía del LLM")
+            return {"error": "El asistente no pudo generar una respuesta. Intenta de nuevo."}
+
+        return {
+            "response": bot_response.content,
+            "listings": serializable_enriched_listings
+        }
+
+    except openai.NotFoundError:
+        logger.error("❌ Modelo de IA no encontrado")
+        return {"error": "El servicio de IA está temporalmente no disponible."}
+    except Exception as e:
+        # ============ MANEJO SEGURO DE ERRORES ============
+        logger.error(f"🔥 Error en chatbot: {str(e)}")
+
+        # NO exponer detalles en producción
+        error_message = "Ocurrió un error al procesar tu solicitud. Intenta de nuevo."
+        if os.getenv("DEBUG", "False") == "True":
+            error_message = f"Error: {str(e)}"
+
+        return {"error": error_message}
+
+
 class ChatbotView(APIView):
     # ============ APLICAR RATE LIMITING ============
     throttle_classes = [ChatbotThrottle]
@@ -245,129 +364,28 @@ class ChatbotView(APIView):
     def post(self, request, *args, **kwargs):
         user_message = request.data.get("message", "")
 
-        # ============ VALIDACIÓN 1: Mensaje vacío ============
-        if not user_message or not isinstance(user_message, str):
-            return Response(
-                {"error": "El mensaje es requerido y debe ser texto."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Procesar mensaje usando la función reutilizable
+        result = process_chatbot_message(user_message)
 
-        # ============ VALIDACIÓN 2: Longitud máxima ============
-        if len(user_message) > MAX_MESSAGE_LENGTH:
-            return Response(
-                {"error": f"El mensaje es demasiado largo (máximo {MAX_MESSAGE_LENGTH} caracteres)."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Manejar errores
+        if result.get("error"):
+            error = result["error"]
 
-        # ============ VALIDACIÓN 3: Detección de Prompt Injection ============
-        if contains_suspicious_content(user_message):
-            logger.warning(
-                f"⚠️ Intento de prompt injection detectado: {user_message[:100]}")
-            return Response(
-                {"error": "Mensaje no permitido."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            # Determinar el código de estado apropiado
+            if "requerido" in error or "largo" in error or "no permitido" in error:
+                status_code = status.HTTP_400_BAD_REQUEST
+            elif "no disponible" in error:
+                status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            else:
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
 
-        # ============ VALIDACIÓN 4: Servicios disponibles ============
-        if listings_collection is None or locations_collection is None or llm is None:
-            logger.error("❌ Servicios no configurados correctamente")
-            return Response(
-                {"error": "El servicio está temporalmente no disponible."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
+            return Response({"error": error}, status=status_code)
 
-        try:
-            # ============ SANITIZAR MENSAJE ============
-            sanitized_message = sanitize_message(user_message)
-
-            # --- Paso 1: Extraer información de la pregunta del usuario ---
-            all_locations = list(
-                locations_collection.find({}, {"_id": 1, "city": 1}))
-            locations_map = {loc['_id']: loc['city'] for loc in all_locations}
-            available_cities_str = ", ".join(
-                sorted(list(set(locations_map.values()))))
-
-            # Buscar IDs de ubicación que coincidan con el mensaje del usuario
-            found_location_ids = []
-            user_message_lower = sanitized_message.lower()
-            for loc in all_locations:
-                if loc['city'].lower() in user_message_lower:
-                    # ============ VALIDAR ObjectId ============
-                    if is_valid_objectid(loc['_id']):
-                        found_location_ids.append(loc['_id'])
-
-            # Extraer filtros de precio del mensaje del usuario
-            price_query = extract_price_filters(sanitized_message)
-
-            # --- Paso 2: Búsqueda en la Base de Datos ---
-            listings_list = []
-            if found_location_ids:
-                listing_filter = {"isApproved": True}
-                listing_filter["locationId"] = {"$in": found_location_ids}
-                if price_query:
-                    listing_filter["price"] = price_query
-
-                listings_cursor = listings_collection.find(listing_filter, {
-                    "title": 1, "price": 1, "category": 1, "slug": 1, "locationId": 1, "_id": 0
-                }).limit(MAX_LISTINGS_RETURN)
-                listings_list = list(listings_cursor)
-
-            # --- Paso 3: Preparar datos para el LLM y el Frontend ---
-            serializable_enriched_listings = []
-            for listing in listings_list:
-                enriched_listing = listing.copy()
-                enriched_listing['city'] = locations_map.get(
-                    listing.get('locationId'), 'N/A')
-                if isinstance(enriched_listing.get('locationId'), ObjectId):
-                    enriched_listing['locationId'] = str(
-                        enriched_listing['locationId'])
-                serializable_enriched_listings.append(enriched_listing)
-
-            listings_context = "\n".join([
-                f"- Título: {l.get('title', 'N/A')}, Categoría: {l.get('category', 'N/A')}, Precio: ${l.get('price', 0)}, Ubicación: {l.get('city', 'N/A')}"
-                for l in serializable_enriched_listings
-            ])
-
-            # --- Paso 4: Ejecutar el LLM ---
-            chain = prompt | llm
-            bot_response = chain.invoke({
-                "available_cities": available_cities_str,
-                "listings_context": listings_context,
-                "user_question": sanitized_message
-            })
-
-            # ============ VALIDACIÓN DE RESPUESTA DEL LLM ============
-            if not hasattr(bot_response, 'content') or not bot_response.content or not bot_response.content.strip():
-                logger.error("❌ Respuesta vacía del LLM")
-                return Response(
-                    {"error": "El asistente no pudo generar una respuesta. Intenta de nuevo."},
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
-                )
-
-            return Response({
-                "response": bot_response.content,
-                "listings": serializable_enriched_listings
-            }, status=status.HTTP_200_OK)
-
-        except openai.NotFoundError:
-            logger.error("❌ Modelo de IA no encontrado")
-            return Response(
-                {"error": "El servicio de IA está temporalmente no disponible."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        except Exception as e:
-            # ============ MANEJO SEGURO DE ERRORES ============
-            logger.error(f"🔥 Error en chatbot: {str(e)}")
-
-            # NO exponer detalles en producción
-            error_message = "Ocurrió un error al procesar tu solicitud. Intenta de nuevo."
-            if os.getenv("DEBUG", "False") == "True":
-                error_message = f"Error: {str(e)}"
-
-            return Response(
-                {"error": error_message},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+        # Retornar respuesta exitosa
+        return Response({
+            "response": result.get("response"),
+            "listings": result.get("listings", [])
+        }, status=status.HTTP_200_OK)
 
 
 class HealthCheckView(APIView):

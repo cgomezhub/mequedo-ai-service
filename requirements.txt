@@ -9,3 +9,4 @@ openai
 langchain
 langchain-nvidia-ai-endpoints
 whitenoise
+requests

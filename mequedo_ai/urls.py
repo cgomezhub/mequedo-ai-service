@@ -21,5 +21,6 @@ from chatbot.views import HealthCheckView
 urlpatterns = [
     path('admin/', admin.site.urls),
     path("api/", include("chatbot.urls")),
+    path('api/whatsapp/', include('whatsapp_integration.urls')),  # WhatsApp webhook
     path('', HealthCheckView.as_view()),  # Health check endpoint
 ]
