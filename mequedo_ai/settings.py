@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     'corsheaders',  # Añadir corsheaders
     'rest_framework',
     'chatbot',
+    'whatsapp_integration',  # WhatsApp Cloud API integration
 ]
 
 MIDDLEWARE = [
@@ -203,6 +204,10 @@ LOGGING = {
             'level': 'INFO',
         },
         'chatbot': {  # Tu app específica
+            'handlers': ['console'],
+            'level': 'DEBUG' if DEBUG else 'INFO',
+        },
+        'whatsapp_integration': {  # WhatsApp integration
             'handlers': ['console'],
             'level': 'DEBUG' if DEBUG else 'INFO',
         },
