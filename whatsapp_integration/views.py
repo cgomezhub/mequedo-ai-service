@@ -98,11 +98,30 @@ class WhatsAppWebhookView(APIView):
             logger.info(
                 f"📨 Received message from {from_number}: {message_text[:50]}")
 
-            # Procesar mensaje
-            handler.process_incoming_message(
-                from_number, message_text, message_id)
+            # Procesar mensaje de forma asíncrona con threading para evitar timeout de Meta
+            import threading
 
-            # Siempre devolver 200 OK a Meta para confirmar recepción
+            # Función wrapper para el thread
+            def process_async():
+                try:
+                    logger.info(
+                        f"🧵 Starting async processing for {from_number}")
+                    handler.process_incoming_message(
+                        from_number, message_text, message_id)
+                    logger.info(
+                        f"✅ Async processing complete for {from_number}")
+                except Exception as e:
+                    logger.error(f"❌ Error in async processing: {str(e)}")
+
+            # Iniciar thread
+            thread = threading.Thread(target=process_async)
+            thread.daemon = True
+            thread.start()
+
+            logger.info(
+                f"🚀 Message handed off to background thread for {from_number}")
+
+            # Siempre devolver 200 OK a Meta para confirmar recepción INMEDIATAMENTE
             return Response({"status": "ok"}, status=status.HTTP_200_OK)
 
         except Exception as e:
