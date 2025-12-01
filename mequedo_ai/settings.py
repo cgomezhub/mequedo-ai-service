@@ -31,14 +31,20 @@ DEBUG = os.getenv('DEBUG', 'False') == 'True'
 # Railway proporciona la URL pública en una variable de entorno.
 # También puedes añadir 'localhost' y '127.0.0.1' para desarrollo local.
 RAILWAY_URL = os.getenv('RAILWAY_STATIC_URL')
+RAILWAY_PUBLIC_DOMAIN = os.getenv('RAILWAY_PUBLIC_DOMAIN')
+
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
     'ai-api.mequedo.app',  # Tu nuevo subdominio para la IA
+    '.railway.app',        # Permitir subdominios de Railway
 ]
+
 if RAILWAY_URL:
-    # Añadimos el dominio de Railway para las comprobaciones de salud de la plataforma
     ALLOWED_HOSTS.append(RAILWAY_URL)
+
+if RAILWAY_PUBLIC_DOMAIN:
+    ALLOWED_HOSTS.append(RAILWAY_PUBLIC_DOMAIN)
 
 # Es buena práctica confiar en el dominio de despliegue para evitar problemas de CSRF.
 CSRF_TRUSTED_ORIGINS = [

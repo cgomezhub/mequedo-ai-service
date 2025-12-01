@@ -62,9 +62,13 @@ class WhatsAppWebhookView(APIView):
     def post(self, request, *args, **kwargs):
         """
         Maneja los mensajes entrantes de WhatsApp.
-
-        Meta envía un payload JSON con la estructura del mensaje.
         """
+        # LOG CRÍTICO DE DEBUGGING
+        logger.critical(
+            f"🔔 WEBHOOK POST RECEIVED from {request.META.get('REMOTE_ADDR')}")
+        logger.critical(f"Headers: {request.headers}")
+        logger.critical(f"Body start: {request.body[:100]}")
+
         try:
             webhook_data = request.data
 
