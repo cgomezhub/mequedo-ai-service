@@ -64,6 +64,13 @@ class WhatsAppWebhookView(APIView):
         Maneja los mensajes entrantes de WhatsApp.
         """
         # LOG CRÍTICO DE DEBUGGING
+        print("=" * 80)
+        print(
+            f"🔔 WEBHOOK POST RECEIVED from {request.META.get('REMOTE_ADDR')}")
+        print(f"Headers: {request.headers}")
+        print(f"Body start: {request.body[:200]}")
+        print("=" * 80)
+
         logger.critical(
             f"🔔 WEBHOOK POST RECEIVED from {request.META.get('REMOTE_ADDR')}")
         logger.critical(f"Headers: {request.headers}")
