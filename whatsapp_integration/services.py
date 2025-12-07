@@ -198,7 +198,7 @@ class MessageFormatter:
 
             # Agregar link si existe slug
             if slug:
-                message += f"🔗 Ver más: https://mequedo.app/listing/{slug}\n"
+                message += f"🔗 Ver más: https://mequedo.app/listings/{slug}\n"
 
         if len(listings) > MessageFormatter.MAX_LIST_ITEMS:
             message += f"\n_...y {len(listings) - MessageFormatter.MAX_LIST_ITEMS} más opciones_"

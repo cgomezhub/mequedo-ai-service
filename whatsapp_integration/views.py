@@ -63,18 +63,11 @@ class WhatsAppWebhookView(APIView):
         """
         Maneja los mensajes entrantes de WhatsApp.
         """
-        # LOG CRÍTICO DE DEBUGGING
-        print("=" * 80)
-        print(
+        # Log del request para trazabilidad
+        logger.info(
             f"🔔 WEBHOOK POST RECEIVED from {request.META.get('REMOTE_ADDR')}")
-        print(f"Headers: {request.headers}")
-        print(f"Body start: {request.body[:200]}")
-        print("=" * 80)
-
-        logger.critical(
-            f"🔔 WEBHOOK POST RECEIVED from {request.META.get('REMOTE_ADDR')}")
-        logger.critical(f"Headers: {request.headers}")
-        logger.critical(f"Body start: {request.body[:100]}")
+        # logger.debug(f"Headers: {request.headers}")
+        # logger.debug(f"Body start: {request.body[:100]}")
 
         try:
             webhook_data = request.data
