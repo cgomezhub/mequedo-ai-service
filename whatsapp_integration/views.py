@@ -1,13 +1,27 @@
 import os
 import logging
+from datetime import datetime, timedelta
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from .message_handler import WhatsAppMessageHandler
+from pymongo import MongoClient
+import certifi
 
 logger = logging.getLogger(__name__)
+
+# --- MongoDB Connection ---
+try:
+    client = MongoClient(os.getenv("DATABASE_URL"), tlsCAFile=certifi.where())
+    # db = client.get_database("test")
+    db = client.get_database("mequedo_prod")
+    scheduled_tasks_collection = db.get_collection("ScheduledTask")
+    logger.info("✅ Connected to MongoDB (ScheduledTask)")
+except Exception as e:
+    logger.error(f"❌ Error connecting to MongoDB: {e}")
+    scheduled_tasks_collection = None
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -128,3 +142,92 @@ class WhatsAppWebhookView(APIView):
             logger.error(f"❌ Error processing webhook: {str(e)}")
             # Aún así devolver 200 OK para evitar reintentos de Meta
             return Response({"status": "error"}, status=status.HTTP_200_OK)
+
+
+class SendReservationRequestView(APIView):
+    """
+    Vista para enviar notificaciones de solicitud de reserva vía WhatsApp.
+    Es llamada por el backend de Next.js cuando se crea una reserva.
+    """
+    # Se debe asegurar autenticación en producción (ej: API Key o JWT)
+    # Por ahora dejamos abierto o asumimos que se configura a nivel global/servidor
+
+    def post(self, request, *args, **kwargs):
+        try:
+            data = request.data
+
+            # 1. Validar datos requeridos
+            required_fields = ["hostPhoneNumber", "guestName",
+                               "listingTitle", "dates", "reservationId", "callbackUrl"]
+            # Note: reservationId and callbackUrl are needed for scheduling
+
+            if not all(field in data for field in required_fields):
+                # Try to proceed even if specific new fields absent for backward compatibility if needed,
+                # but better to enforce key fields.
+                # Strict check for now:
+                if "hostPhoneNumber" not in data:
+                    return Response({"error": "Missing hostPhoneNumber"}, status=400)
+
+            to_number = data.get("hostPhoneNumber")
+            guest_name = data.get("guestName")
+            listing_title = data.get("listingTitle")
+            dates = data.get("dates")
+            reservation_id = data.get("reservationId")
+            callback_url = data.get("callbackUrl")
+
+            # 2. Instanciar servicio
+            from .services import WhatsAppService
+            whatsapp_service = WhatsAppService()
+
+            # 3. Construir componentes de la plantilla
+            components = [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": guest_name},
+                        {"type": "text", "text": listing_title},
+                        {"type": "text", "text": dates},
+                    ]
+                }
+            ]
+
+            # 4. Enviar mensaje
+            success = whatsapp_service.send_template_message(
+                to=to_number,
+                template_name="reservation_request_notice",
+                language_code="es",
+                components=components
+            )
+
+            if success:
+                logger.info(f"✅ Reservation notification sent to {to_number}")
+
+                # 5. Schedule Expiration Task (MongoDB)
+                if scheduled_tasks_collection is not None and reservation_id and callback_url:
+                    expiration_time = datetime.utcnow() + timedelta(hours=1)
+                    # expiration_time = datetime.utcnow() + timedelta(hours=0.05)
+                    task_doc = {
+                        "type": "reservation_expiration",
+                        "reservationId": reservation_id,
+                        "callbackUrl": callback_url,
+                        "executeAt": expiration_time,
+                        "status": "pending",
+                        "createdAt": datetime.utcnow()
+                    }
+                    try:
+                        scheduled_tasks_collection.insert_one(task_doc)
+                        logger.info(
+                            f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
+                    except Exception as db_err:
+                        logger.error(f"❌ Failed to schedule task: {db_err}")
+
+                return Response({"status": "success", "message": "Notification sent and task scheduled"}, status=status.HTTP_200_OK)
+            else:
+                return Response(
+                    {"error": "Failed to send WhatsApp message"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        except Exception as e:
+            logger.error(f"❌ Error in SendReservationRequestView: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -14,7 +14,7 @@ class WhatsAppService:
     def __init__(self):
         self.phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
         self.access_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
-        self.api_version = "v21.0"
+        self.api_version = "v24.0"
         self.base_url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}"
 
         if not self.phone_number_id or not self.access_token:
@@ -137,6 +137,62 @@ class WhatsAppService:
             return True
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ Error marking message as read: {str(e)}")
+
+    def send_template_message(
+        self, to: str, template_name: str, language_code: str = "es", components: List[Dict] = None
+    ) -> bool:
+        """
+        Envía un mensaje de plantilla (Template Message) a un número.
+        Requerido para iniciar conversaciones fuera de la ventana de 24h.
+
+        Args:
+            to: Número del destinatario
+            template_name: Nombre de la plantilla en Meta Business Manager
+            language_code: Código de idioma (ej: "es", "en_US")
+            components: Lista de componentes (variables {{1}}, botones, etc.)
+
+        Returns:
+            bool: True si se envió exitosamente
+        """
+        if not self.phone_number_id or not self.access_token:
+            logger.error("❌ WhatsApp not configured")
+            return False
+
+        # Sanitizar número (eliminar '+' y espacios)
+        to_clean = to.replace("+", "").replace(" ", "").strip()
+
+        url = f"{self.base_url}/messages"
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_clean,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": language_code}
+            }
+        }
+
+        if components:
+            payload["template"]["components"] = components
+
+        try:
+            response = requests.post(
+                url, headers=self._get_headers(), json=payload, timeout=10
+            )
+            response.raise_for_status()
+
+            # Loguear respuesta para debugging
+            # response_data = response.json()
+            logger.info(
+                f"✅ Template message '{template_name}' sent to {to_clean}")
+
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Error sending template to {to_clean}: {str(e)}")
+            if hasattr(e, "response") and e.response is not None:
+                logger.error(f"Response: {e.response.text}")
             return False
 
 
