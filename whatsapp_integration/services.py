@@ -144,7 +144,6 @@ class WhatsAppService:
         """
         Envía un mensaje de plantilla (Template Message) a un número.
         Requerido para iniciar conversaciones fuera de la ventana de 24h.
-
         Args:
             to: Número del destinatario
             template_name: Nombre de la plantilla en Meta Business Manager
