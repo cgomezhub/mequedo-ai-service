@@ -110,7 +110,7 @@ class ChatbotThrottle(AnonRateThrottle):
 # 1. Conexión a MongoDB
 try:
     client = MongoClient(os.getenv("DATABASE_URL"), tlsCAFile=certifi.where())
-    db = client.get_database("mequedo_prod")
+    db = client.get_database(os.getenv("MONGODB_DB_NAME", "test"))
     listings_collection = db.get_collection("Listing")
     locations_collection = db.get_collection("Location")
     print("✅ Conexión a MongoDB exitosa.")

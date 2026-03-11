@@ -22,8 +22,7 @@ class Command(BaseCommand):
         try:
             client = MongoClient(os.getenv("DATABASE_URL"),
                                  tlsCAFile=certifi.where())
-            # db = client.get_database("test")
-            db = client.get_database("mequedo_prod")
+            db = client.get_database(os.getenv("MONGODB_DB_NAME", "test"))
             tasks_collection = db.get_collection("ScheduledTask")
             self.stdout.write(self.style.SUCCESS(
                 '✅ Connected to MongoDB (ScheduledTask)'))

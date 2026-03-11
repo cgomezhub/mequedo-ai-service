@@ -15,8 +15,7 @@ logger = logging.getLogger(__name__)
 # --- MongoDB Connection ---
 try:
     client = MongoClient(os.getenv("DATABASE_URL"), tlsCAFile=certifi.where())
-    # db = client.get_database("test")
-    db = client.get_database("mequedo_prod")
+    db = client.get_database(os.getenv("MONGODB_DB_NAME", "test"))
     scheduled_tasks_collection = db.get_collection("ScheduledTask")
     logger.info("✅ Connected to MongoDB (ScheduledTask)")
 except Exception as e:
@@ -193,7 +192,8 @@ class SendReservationRequestView(APIView):
                 }
             ]
             # TODO!: Implementar envío de mensaje texto con Twilio
-            # 4. Enviar mensaje WhatsApp
+
+            # 4. send  WhatsApp message
             success = whatsapp_service.send_template_message(
                 to=to_number,
                 template_name="reservation_request_notice",
@@ -205,30 +205,30 @@ class SendReservationRequestView(APIView):
                 logger.info(f"✅ Reservation notification sent to {to_number}")
 
             # 5. Schedule Expiration Task (MongoDB)
-                if scheduled_tasks_collection is not None and reservation_id and callback_url:
-                    expiration_time = datetime.utcnow() + timedelta(hours=1)
-                    # expiration_time = datetime.utcnow() + timedelta(hours=0.05)
-                    task_doc = {
-                        "type": "reservation_expiration",
-                        "reservationId": reservation_id,
-                        "callbackUrl": callback_url,
-                        "executeAt": expiration_time,
-                        "status": "pending",
-                        "createdAt": datetime.utcnow()
-                    }
-                    try:
-                        scheduled_tasks_collection.insert_one(task_doc)
-                        logger.info(
-                            f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
-                    except Exception as db_err:
-                        logger.error(f"❌ Failed to schedule task: {db_err}")
+            if scheduled_tasks_collection is not None and reservation_id and callback_url:
+                expiration_time = datetime.utcnow() + timedelta(hours=1)
+                # expiration_time = datetime.utcnow() + timedelta(hours=0.05)
+                task_doc = {
+                    "type": "reservation_expiration",
+                    "reservationId": reservation_id,
+                    "callbackUrl": callback_url,
+                    "executeAt": expiration_time,
+                    "status": "pending",
+                    "createdAt": datetime.utcnow()
+                }
+                try:
+                    scheduled_tasks_collection.insert_one(task_doc)
+                    logger.info(
+                        f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
+                except Exception as db_err:
+                    logger.error(f"❌ Failed to schedule task: {db_err}")
 
-                return Response({"status": "success", "message": "Notification sent and task scheduled"}, status=status.HTTP_200_OK)
-            else:
-                return Response(
-                    {"error": "Failed to send WhatsApp message"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+            return Response({"status": "success", "message": "Notification sent and task scheduled"}, status=status.HTTP_200_OK)
+            # else:
+            #     return Response(
+            #         {"error": "Failed to send WhatsApp message"},
+            #         status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            #     )
 
         except Exception as e:
             logger.error(f"❌ Error in SendReservationRequestView: {str(e)}")
@@ -291,7 +291,7 @@ class SendPaymentRequestView(APIView):
                 }
             ]
 
-            # 4. Enviar mensaje
+            # 4. send WhatsApp message
             success = whatsapp_service.send_template_message(
                 to=to_number,
                 template_name="reservation_payment_notice",
@@ -302,31 +302,31 @@ class SendPaymentRequestView(APIView):
             if success:
                 logger.info(f"✅ Reservation notification sent to {to_number}")
 
-                # 5. Schedule Expiration Task (MongoDB)
-                if scheduled_tasks_collection is not None and reservation_id and callback_url:
-                    expiration_time = datetime.utcnow() + timedelta(hours=1)
-                    # expiration_time = datetime.utcnow() + timedelta(hours=0.05)
-                    task_doc = {
-                        "type": "reservation_expiration",
-                        "reservationId": reservation_id,
-                        "callbackUrl": callback_url,
-                        "executeAt": expiration_time,
-                        "status": "pending",
-                        "createdAt": datetime.utcnow()
-                    }
-                    try:
-                        scheduled_tasks_collection.insert_one(task_doc)
-                        logger.info(
-                            f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
-                    except Exception as db_err:
-                        logger.error(f"❌ Failed to schedule task: {db_err}")
+            # 5. Schedule Expiration Task (MongoDB)
+            if scheduled_tasks_collection is not None and reservation_id and callback_url:
+                expiration_time = datetime.utcnow() + timedelta(hours=1)
+                # expiration_time = datetime.utcnow() + timedelta(hours=0.05)
+                task_doc = {
+                    "type": "reservation_expiration",
+                    "reservationId": reservation_id,
+                    "callbackUrl": callback_url,
+                    "executeAt": expiration_time,
+                    "status": "pending",
+                    "createdAt": datetime.utcnow()
+                }
+                try:
+                    scheduled_tasks_collection.insert_one(task_doc)
+                    logger.info(
+                        f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
+                except Exception as db_err:
+                    logger.error(f"❌ Failed to schedule task: {db_err}")
 
-                return Response({"status": "success", "message": "Notification sent and task scheduled"}, status=status.HTTP_200_OK)
-            else:
-                return Response(
-                    {"error": "Failed to send WhatsApp message"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+            return Response({"status": "success", "message": "Notification sent and task scheduled"}, status=status.HTTP_200_OK)
+            # else:
+            #     return Response(
+            #         {"error": "Failed to send WhatsApp message"},
+            #         status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            #     )
 
         except Exception as e:
             logger.error(f"❌ Error in SendReservationRequestView: {str(e)}")
