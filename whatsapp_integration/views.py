@@ -148,24 +148,35 @@ class SendReservationRequestView(APIView):
     Vista para enviar notificaciones de solicitud de reserva vía WhatsApp.
     Es llamada por el backend de Next.js cuando se crea una reserva.
     """
-    # Se debe asegurar autenticación en producción (ej: API Key o JWT)
-    # Por ahora dejamos abierto o asumimos que se configura a nivel global/servidor
 
     def post(self, request, *args, **kwargs):
+        # Validate Internal Secret
+        secret_key = os.getenv("DJANGO_SERVICE_SECRET")
+        if secret_key and request.headers.get("X-Internal-Secret") != secret_key:
+            logger.warning(
+                f"⛔ Unauthorized access attempt to SendReservationRequestView from {request.META.get('REMOTE_ADDR')}")
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
         try:
             data = request.data
+            print("Data", data)
 
             # 1. Validar datos requeridos
             required_fields = ["hostPhoneNumber", "guestName", "hostName",
                                "listingTitle", "dates", "reservationId", "callbackUrl"]
-            # Note: reservationId and callbackUrl are needed for scheduling
 
-            if not all(field in data for field in required_fields):
-                # Try to proceed even if specific new fields absent for backward compatibility if needed,
-                # but better to enforce key fields.
-                # Strict check for now:
-                if "hostPhoneNumber" not in data:
-                    return Response({"error": "Missing hostPhoneNumber"}, status=400)
+            missing_or_invalid = [
+                field for field in required_fields
+                if field not in data or data[field] in [None, "", "null", "undefined"]
+            ]
+
+            if missing_or_invalid:
+                logger.warning(
+                    f"⚠️ Missing or invalid fields in SendReservationRequestView: {missing_or_invalid}")
+                return Response(
+                    {"error": f"Missing or invalid fields: {', '.join(missing_or_invalid)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
             to_number = data.get("hostPhoneNumber")
             guest_name = data.get("guestName")
@@ -174,26 +185,41 @@ class SendReservationRequestView(APIView):
             dates = data.get("dates")
             reservation_id = data.get("reservationId")
             callback_url = data.get("callbackUrl")
+            listing_image = data.get(
+                "listingMainImage") or "https://res.cloudinary.com/carlosgomez/image/upload/v1773242952/jm9zmpz79bcf9sj5gqb9.png"
 
             # 2. Instanciar servicio
             from .services import WhatsAppService
             whatsapp_service = WhatsAppService()
 
             # 3. Construir componentes de la plantilla
-            components = [
-                {
-                    "type": "body",
+            components = []
+            # Add Header Image if present
+            if listing_image:
+                components.append({
+                    "type": "header",
                     "parameters": [
-                        {"type": "text", "text": host_name},
-                        {"type": "text", "text": listing_title},
-                        {"type": "text", "text": dates},
-                        {"type": "text", "text": guest_name},
+                        {
+                            "type": "image",
+                            "image": {"link": listing_image}
+                        }
                     ]
-                }
-            ]
-            # TODO!: Implementar envío de mensaje texto con Twilio
+                })
+
+            # Add Body parameters
+            components.append({
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": host_name},
+                    {"type": "text", "text": listing_title},
+                    {"type": "text", "text": dates},
+                    {"type": "text", "text": guest_name},
+                ]
+            })
 
             # 4. send  WhatsApp message
+            print("Sending reservation request to", to_number)
+            print("Reservation request components", components)
             success = whatsapp_service.send_template_message(
                 to=to_number,
                 template_name="reservation_request_notice",
@@ -206,17 +232,19 @@ class SendReservationRequestView(APIView):
 
             # 5. Schedule Expiration Task (MongoDB)
             if scheduled_tasks_collection is not None and reservation_id and callback_url:
-                expiration_time = datetime.utcnow() + timedelta(hours=1)
-                # expiration_time = datetime.utcnow() + timedelta(hours=0.05)
-                task_doc = {
-                    "type": "reservation_expiration",
-                    "reservationId": reservation_id,
-                    "callbackUrl": callback_url,
-                    "executeAt": expiration_time,
-                    "status": "pending",
-                    "createdAt": datetime.utcnow()
-                }
                 try:
+                    expiration_hours = float(
+                        os.getenv("RESERVATION_EXPIRATION_HOURS", "1"))
+                    expiration_time = datetime.utcnow() + timedelta(hours=expiration_hours)
+
+                    task_doc = {
+                        "type": "reservation_expiration",
+                        "reservationId": reservation_id,
+                        "callbackUrl": callback_url,
+                        "executeAt": expiration_time,
+                        "status": "pending",
+                        "createdAt": datetime.utcnow()
+                    }
                     scheduled_tasks_collection.insert_one(task_doc)
                     logger.info(
                         f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
@@ -253,22 +281,30 @@ class SendPaymentRequestView(APIView):
 
         try:
             data = request.data
-            # 1. Validar datos requeridoswa
+            print("Payment request data", data)
+            # 1. Validar datos requeridos
             required_fields = ["guestPhoneNumber", "guestName", "hostName",
                                "listingTitle", "dates", "reservationId", "callbackUrl"]
-            # Note: reservationId and callbackUrl are needed for scheduling
 
-            if not all(field in data for field in required_fields):
-                # Try to proceed even if specific new fields absent for backward compatibility if needed,
-                # but better to enforce key fields.
-                # Strict check for now:
-                if "guestPhoneNumber" not in data:
-                    return Response({"error": "Missing guestPhoneNumber"}, status=400)
+            missing_or_invalid = [
+                field for field in required_fields
+                if field not in data or data[field] in [None, "", "null", "undefined"]
+            ]
+
+            if missing_or_invalid:
+                logger.warning(
+                    f"⚠️ Missing or invalid fields in SendPaymentRequestView: {missing_or_invalid}")
+                return Response(
+                    {"error": f"Missing or invalid fields: {', '.join(missing_or_invalid)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
             to_number = data.get("guestPhoneNumber")
             guest_name = data.get("guestName")
             host_name = data.get("hostName")
             listing_title = data.get("listingTitle")
+            listing_image = data.get(
+                "listingMainImage") or "https://res.cloudinary.com/carlosgomez/image/upload/v1773242952/jm9zmpz79bcf9sj5gqb9.png"
             dates = data.get("dates")
             reservation_id = data.get("reservationId")
             callback_url = data.get("callbackUrl")
@@ -278,19 +314,28 @@ class SendPaymentRequestView(APIView):
             whatsapp_service = WhatsAppService()
 
             # 3. Construir componentes de la plantilla
-            components = [
-                {
-                    "type": "body",
+            components = []
+            # Add Header Image if present
+            if listing_image:
+                components.append({
+                    "type": "header",
                     "parameters": [
-                        {"type": "text", "text": guest_name},
-                        {"type": "text", "text": listing_title},
-                        {"type": "text", "text": dates},
-                        {"type": "text", "text": host_name},
-
+                        {
+                            "type": "image",
+                            "image": {"link": listing_image}
+                        }
                     ]
-                }
-            ]
+                })
+            components.append({
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": guest_name},
+                    {"type": "text", "text": listing_title},
+                    {"type": "text", "text": dates},
+                    {"type": "text", "text": host_name},
 
+                ]
+            })
             # 4. send WhatsApp message
             success = whatsapp_service.send_template_message(
                 to=to_number,
@@ -304,17 +349,19 @@ class SendPaymentRequestView(APIView):
 
             # 5. Schedule Expiration Task (MongoDB)
             if scheduled_tasks_collection is not None and reservation_id and callback_url:
-                expiration_time = datetime.utcnow() + timedelta(hours=1)
-                # expiration_time = datetime.utcnow() + timedelta(hours=0.05)
-                task_doc = {
-                    "type": "reservation_expiration",
-                    "reservationId": reservation_id,
-                    "callbackUrl": callback_url,
-                    "executeAt": expiration_time,
-                    "status": "pending",
-                    "createdAt": datetime.utcnow()
-                }
                 try:
+                    expiration_hours = float(
+                        os.getenv("RESERVATION_EXPIRATION_HOURS", "1"))
+                    expiration_time = datetime.utcnow() + timedelta(hours=expiration_hours)
+
+                    task_doc = {
+                        "type": "reservation_expiration",
+                        "reservationId": reservation_id,
+                        "callbackUrl": callback_url,
+                        "executeAt": expiration_time,
+                        "status": "pending",
+                        "createdAt": datetime.utcnow()
+                    }
                     scheduled_tasks_collection.insert_one(task_doc)
                     logger.info(
                         f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
@@ -329,5 +376,125 @@ class SendPaymentRequestView(APIView):
             #     )
 
         except Exception as e:
-            logger.error(f"❌ Error in SendReservationRequestView: {str(e)}")
+            logger.error(f"❌ Error in SendPaymentRequestView: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SendPaymentSuccessView(APIView):
+    """
+    Vista para enviar notificaciones de pago exitoso vía WhatsApp a host y guest.
+    Es llamada por el backend de Next.js.
+    """
+
+    def post(self, request, *args, **kwargs):
+        # Validate Internal Secret
+        secret_key = os.getenv("DJANGO_SERVICE_SECRET")
+        if secret_key and request.headers.get("X-Internal-Secret") != secret_key:
+            logger.warning(
+                f"⛔ Unauthorized access attempt to SendPaymentSuccessView from {request.META.get('REMOTE_ADDR')}")
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            data = request.data
+
+            # 1. Validar datos requeridos básicos
+            host_phone = data.get("hostPhoneNumber")
+            guest_phone = data.get("guestPhoneNumber")
+
+            if not host_phone and not guest_phone:
+                return Response({"error": "Missing at least one phone number (hostPhoneNumber or guestPhoneNumber)"}, status=400)
+
+            guest_name = data.get("guestName", "Guest")
+            host_name = data.get("hostName", "Host")
+            listing_title = data.get("listingTitle", "Alojamiento")
+            listing_image = data.get(
+                "listingMainImage") or "https://res.cloudinary.com/carlosgomez/image/upload/v1773242952/jm9zmpz79bcf9sj5gqb9.png"
+            dates = data.get("dates", "")
+            amount = str(data.get("amount", ""))
+            currency = data.get("currency", "USD")
+
+            # 2. Instanciar servicio
+            from .services import WhatsAppService
+            whatsapp_service = WhatsAppService()
+
+            responses = {}
+
+            # 3. Enviar a Host si el número está presente
+            if host_phone:
+                # Variables del host:
+                # {{1}}: host name, {{2}}: guest name, {{3}}: currency, {{4}}: amount, {{5}}: listing name, {{6}}: dates
+                host_components = [
+                    {
+                        "type": "header",
+                        "parameters": [
+                            {
+                                "type": "image",
+                                "image": {"link": listing_image}
+                            }
+                        ]
+                    },
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": host_name},
+                            {"type": "text", "text": guest_name},
+                            {"type": "text", "text": currency},
+                            {"type": "text", "text": amount},
+                            {"type": "text", "text": listing_title},
+                            {"type": "text", "text": dates},
+                        ]
+                    }
+                ]
+                success_host = whatsapp_service.send_template_message(
+                    to=host_phone,
+                    template_name="host_payment_notice",
+                    language_code="es",
+                    components=host_components
+                )
+                responses["host_notified"] = success_host
+                if success_host:
+                    logger.info(
+                        f"✅ Payment success notification sent to HOST {host_phone}")
+
+            # 4. Enviar a Guest si el número está presente
+            if guest_phone:
+                # Variables del guest:
+                # {{1}}: guest name, {{2}}: currency, {{3}}: amount, {{4}}: listing name, {{5}}: dates, {{6}}: host name
+                guest_components = [
+                    {
+                        "type": "header",
+                        "parameters": [
+                            {
+                                "type": "image",
+                                "image": {"link": listing_image}
+                            }
+                        ]
+                    },
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": guest_name},
+                            {"type": "text", "text": currency},
+                            {"type": "text", "text": amount},
+                            {"type": "text", "text": listing_title},
+                            {"type": "text", "text": dates},
+                            {"type": "text", "text": host_name},
+                        ]
+                    }
+                ]
+                success_guest = whatsapp_service.send_template_message(
+                    to=guest_phone,
+                    template_name="guest_payment_notice",
+                    language_code="es",
+                    components=guest_components
+                )
+                responses["guest_notified"] = success_guest
+                if success_guest:
+                    logger.info(
+                        f"✅ Payment success notification sent to GUEST {guest_phone}")
+
+            return Response({"status": "success", "details": responses}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"❌ Error in SendPaymentSuccessView: {str(e)}")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

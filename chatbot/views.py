@@ -362,6 +362,13 @@ class ChatbotView(APIView):
     throttle_classes = [ChatbotThrottle]
 
     def post(self, request, *args, **kwargs):
+        # Validate Internal Secret
+        secret_key = os.getenv("DJANGO_SERVICE_SECRET")
+        if secret_key and request.headers.get("X-Internal-Secret") != secret_key:
+            logger.warning(
+                f"⛔ Unauthorized access attempt to ChatbotView from {request.META.get('REMOTE_ADDR')}")
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
         user_message = request.data.get("message", "")
 
         # Procesar mensaje usando la función reutilizable
