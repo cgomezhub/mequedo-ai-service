@@ -498,3 +498,197 @@ class SendPaymentSuccessView(APIView):
         except Exception as e:
             logger.error(f"❌ Error in SendPaymentSuccessView: {str(e)}")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SendPaymentReviewView(APIView):
+    """
+    Vista para enviar notificaciones a los administradores de que un recibo de pago 
+    manual está en cola de revisión.
+    Es llamada por el backend de Next.js.
+    """
+
+    def post(self, request, *args, **kwargs):
+        # Validate Internal Secret
+        secret_key = os.getenv("DJANGO_SERVICE_SECRET")
+        if secret_key and request.headers.get("X-Internal-Secret") != secret_key:
+            logger.warning(
+                f"⛔ Unauthorized access attempt to SendPaymentReviewView from {request.META.get('REMOTE_ADDR')}")
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            data = request.data
+
+            order_id = data.get("orderId")
+            sender_name = data.get("senderName", "Guest")
+            transaction_id = data.get("transactionId", "N/A")
+            amount = str(data.get("amount", ""))
+            currency = data.get("currency", "Bs.")
+            receipt_url = data.get("receiptUrl")
+
+            if not order_id:
+                return Response({"error": "Missing orderId"}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Get admin numbers from environment (comma-separated)
+            admin_numbers_env = os.getenv("ADMIN_WHATSAPP_NUMBERS", "")
+            admin_numbers = [num.strip() for num in admin_numbers_env.split(",") if num.strip()]
+
+            if not admin_numbers:
+                logger.warning("⚠️ No ADMIN_WHATSAPP_NUMBERS configured. Cannot send payment review notification.")
+                return Response({"error": "No admin numbers configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            from .services import WhatsAppService
+            whatsapp_service = WhatsAppService()
+
+            # Format components
+            components = []
+            if receipt_url:
+                components.append({
+                    "type": "header",
+                    "parameters": [
+                        {
+                            "type": "document", # Can be image or document, relying on standard format
+                            "document": {"link": receipt_url}
+                        }
+                    ]
+                })
+
+            components.append({
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": sender_name},
+                    {"type": "text", "text": amount},
+                    {"type": "text", "text": currency},
+                    {"type": "text", "text": transaction_id},
+                    {"type": "text", "text": order_id},
+                ]
+            })
+
+            notified_admins = []
+            for admin_phone in admin_numbers:
+                success = whatsapp_service.send_template_message(
+                    to=admin_phone,
+                    template_name="admin_payment_review",
+                    language_code="es",
+                    components=components
+                )
+                if success:
+                    notified_admins.append(admin_phone)
+
+            logger.info(f"✅ Payment review notification sent to {len(notified_admins)} admin(s)")
+            return Response({"status": "success", "notified_admins": notified_admins}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"❌ Error in SendPaymentReviewView: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SendPaymentRejectedView(APIView):
+    """
+    Vista para enviar notificaciones de rechazo de pago manual vía WhatsApp a host y guest.
+    Es llamada por el backend de Next.js.
+    """
+
+    def post(self, request, *args, **kwargs):
+        # Validate Internal Secret
+        secret_key = os.getenv("DJANGO_SERVICE_SECRET")
+        if secret_key and request.headers.get("X-Internal-Secret") != secret_key:
+            logger.warning(
+                f"⛔ Unauthorized access attempt to SendPaymentRejectedView from {request.META.get('REMOTE_ADDR')}")
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            data = request.data
+
+            host_phone = data.get("hostPhoneNumber")
+            guest_phone = data.get("guestPhoneNumber")
+            amount = str(data.get("amount", ""))
+            currency = data.get("currency", "Bs.")
+
+            if not host_phone and not guest_phone:
+                return Response({"error": "Missing at least one phone number (hostPhoneNumber or guestPhoneNumber)"}, status=status.HTTP_400_BAD_REQUEST)
+
+            guest_name = data.get("guestName", "Guest")
+            host_name = data.get("hostName", "Host")
+            listing_title = data.get("listingTitle", "Alojamiento")
+            listing_image = data.get(
+                "listingMainImage") or "https://res.cloudinary.com/carlosgomez/image/upload/v1773242952/jm9zmpz79bcf9sj5gqb9.png"
+            dates = data.get("dates", "")
+
+            from .services import WhatsAppService
+            whatsapp_service = WhatsAppService()
+
+            responses = {}
+
+            # 1. Enviar a Guest
+            if guest_phone:
+                guest_components = [
+                    {
+                        "type": "header",
+                        "parameters": [
+                            {
+                                "type": "image",
+                                "image": {"link": listing_image}
+                            }
+                        ]
+                    },
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": guest_name},
+                            {"type": "text", "text": amount},
+                            {"type": "text", "text": currency},
+                            {"type": "text", "text": listing_title},
+                            {"type": "text", "text": host_name},
+                        ]
+                    }
+                ]
+                success_guest = whatsapp_service.send_template_message(
+                    to=guest_phone,
+                    template_name="guest_payment_rejected",
+                    language_code="es",
+                    components=guest_components
+                )
+                responses["guest_notified"] = success_guest
+                if success_guest:
+                    logger.info(
+                        f"✅ Payment rejection notification sent to GUEST {guest_phone}")
+
+            # 2. Enviar a Host
+            if host_phone:
+                host_components = [
+                    {
+                        "type": "header",
+                        "parameters": [
+                            {
+                                "type": "image",
+                                "image": {"link": listing_image}
+                            }
+                        ]
+                    },
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": host_name},
+                            {"type": "text", "text": guest_name},
+                            {"type": "text", "text": amount},
+                            {"type": "text", "text": currency},
+                            {"type": "text", "text": listing_title},
+                        ]
+                    }
+                ]
+                success_host = whatsapp_service.send_template_message(
+                    to=host_phone,
+                    template_name="host_payment_rejected",
+                    language_code="es",
+                    components=host_components
+                )
+                responses["host_notified"] = success_host
+                if success_host:
+                    logger.info(
+                        f"✅ Payment rejection notification sent to HOST {host_phone}")
+
+            return Response({"status": "success", "details": responses}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"❌ Error in SendPaymentRejectedView: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
