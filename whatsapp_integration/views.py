@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime, timedelta
+import threading
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -84,10 +85,7 @@ class WhatsAppWebhookView(APIView):
 
         try:
             webhook_data = request.data
-
-            # Log del webhook para debugging (solo en desarrollo)
-            if os.getenv("DEBUG", "False") == "True":
-                logger.debug(f"Webhook data: {webhook_data}")
+            logger.info(f"Raw Webhook Payload (Parsed): {webhook_data}")
 
             # Verificar que sea un evento de WhatsApp Business
             if webhook_data.get("object") != "whatsapp_business_account":
@@ -112,7 +110,6 @@ class WhatsAppWebhookView(APIView):
                 f"📨 Received message from {from_number}: {message_text[:50]}")
 
             # Procesar mensaje de forma asíncrona con threading para evitar timeout de Meta
-            import threading
 
             # Función wrapper para el thread
             def process_async():

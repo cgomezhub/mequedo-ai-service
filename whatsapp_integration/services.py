@@ -27,6 +27,12 @@ class WhatsAppService:
             "Content-Type": "application/json",
         }
 
+    def _sanitize_number(self, phone: str) -> str:
+        """Limpia el número de teléfono para que solo contenga dígitos."""
+        if not phone:
+            return ""
+        return "".join(filter(str.isdigit, phone))
+
     def send_text_message(self, to: str, message: str) -> bool:
         """
         Envía un mensaje de texto a un número de WhatsApp.
@@ -43,10 +49,12 @@ class WhatsAppService:
             return False
 
         url = f"{self.base_url}/messages"
+        to_clean = self._sanitize_number(to)
+        
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": to,
+            "to": to_clean,
             "type": "text",
             "text": {"preview_url": True, "body": message},
         }
@@ -84,10 +92,12 @@ class WhatsAppService:
             return False
 
         url = f"{self.base_url}/messages"
+        to_clean = self._sanitize_number(to)
+        
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": to,
+            "to": to_clean,
             "type": "interactive",
             "interactive": {
                 "type": "list",
@@ -105,6 +115,57 @@ class WhatsAppService:
             return True
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ Error sending interactive list to {to}: {str(e)}")
+            if hasattr(e, "response") and e.response is not None:
+                logger.error(f"Response: {e.response.text}")
+            return False
+
+    def send_button_message(self, to: str, body_text: str, buttons: List[Dict]) -> bool:
+        """
+        Envía un mensaje interactivo con botones de respuesta (máximo 3).
+        Args:
+            to: Número del destinatario
+            body_text: Texto del cuerpo del mensaje
+            buttons: Lista de dicts [{'id': 'id1', 'title': 'Título'}]
+        """
+        if not self.phone_number_id or not self.access_token:
+            logger.error("❌ WhatsApp not configured")
+            return False
+
+        url = f"{self.base_url}/messages"
+        to_clean = self._sanitize_number(to)
+        
+        # WhatsApp supports up to 3 buttons for interactive type 'button'
+        formatted_buttons = []
+        for btn in buttons[:3]:
+            formatted_buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": btn.get("id"),
+                    "title": btn.get("title")[:20] # Limit to 20 chars
+                }
+            })
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_clean,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": body_text[:1024]},
+                "action": {"buttons": formatted_buttons},
+            },
+        }
+
+        try:
+            response = requests.post(
+                url, headers=self._get_headers(), json=payload, timeout=10
+            )
+            response.raise_for_status()
+            logger.info(f"✅ Button message sent to {to_clean}")
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Error sending button message to {to_clean}: {str(e)}")
             if hasattr(e, "response") and e.response is not None:
                 logger.error(f"Response: {e.response.text}")
             return False
@@ -158,7 +219,7 @@ class WhatsAppService:
             return False
 
         # Sanitizar número (eliminar '+' y espacios)
-        to_clean = to.replace("+", "").replace(" ", "").strip()
+        to_clean = self._sanitize_number(to)
 
         url = f"{self.base_url}/messages"
 
@@ -203,6 +264,35 @@ class MessageFormatter:
 
     MAX_MESSAGE_LENGTH = 4096  # Límite de WhatsApp
     MAX_LIST_ITEMS = 10  # Límite de items en lista interactiva
+
+    @staticmethod
+    def extract_actions(text: str) -> Dict:
+        """
+        Extrae patrones de botones [Título](action:ID) del texto.
+        Retorna el texto limpio y una lista de botones.
+        """
+        import re
+        # Pattern: [Title](action:ID)
+        pattern = r"\[(.*?)\]\(action:(.*?)\)"
+        matches = re.findall(pattern, text)
+        
+        buttons = []
+        for match in matches:
+            buttons.append({
+                "title": match[0].strip(),
+                "id": match[1].strip()
+            })
+            
+        # Reemplazar los patrones [Label](action:ID) por solo Label en el texto
+        # Esto evita dejar "huecos" en la oración.
+        clean_text = re.sub(r"\[(.*?)\]\(action:.*?\)", r"\1", text).strip()
+        # Colapsar múltiples newlines resultantes
+        clean_text = re.sub(r"\n{3,}", "\n\n", clean_text)
+        
+        return {
+            "clean_text": clean_text,
+            "buttons": buttons
+        }
 
     @staticmethod
     def format_text_message(text: str) -> str:

@@ -43,3 +43,21 @@ description: [SHORT TITLE OF THE WORKFLOW]
 
 1. **[Step Name]**
    - [ ] [Step Instruction]
+
+## Phase 3: Testing & Quality Assurance (MANDATORY)
+
+1. **Test Environment Preparation**
+   - [ ] Identify external dependencies (MongoDB, WhatsApp API, LLMs) and set up necessary mocks or test databases using established Django patterns.
+   - [ ] Ensure co-location of tests (e.g., `tests/` directory or `test_*.py` files).
+
+2. **Automated Test Creation**
+   - [ ] Create unit tests for business logic, Python utilities, and custom Agentic Tools (CrewAI).
+   - [ ] Create integration tests for Django API routes (DRF Views), covering:
+     - [ ] **Success Path:** Verify 200 OK and expected API format.
+     - [ ] **Background Execution:** Verify webhook views return 200 OK immediately and hand off heavy logic (like Agent execution) to threads/Celery.
+     - [ ] **Error Handling:** Verify appropriate 400/500 responses for invalid inputs or external service timeouts.
+
+3. **Verification & Validation**
+   - [ ] Run `python manage.py test` or `pytest` and ensure all new tests pass.
+   - [ ] Check logs for Agent execution transparency when utilizing CrewAI.
+   - [ ] Validate PEP 8 compliance for Python code.

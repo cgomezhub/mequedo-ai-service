@@ -5,10 +5,10 @@ This project is a Django-based AI service for **Mequedo**, an accommodation plat
 ## Tech Stack
 
 - **Framework:** Django with Django Rest Framework (DRF)
-- **AI Orchestration:** LangChain
+- **AI Orchestration:** CrewAI (Multi-Agent System), formerly LangChain
 - **LLMs:** OpenAI and NVIDIA AI Endpoints (e.g., Llama 3)
 - **Database:** MongoDB (Listings, Locations, Scheduled Tasks) and SQLite (Django default)
-- **Integrations:** WhatsApp Cloud API
+- **Integrations:** WhatsApp Cloud API (Using background threading)
 
 ## Core Persona: Laura
 

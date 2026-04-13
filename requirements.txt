@@ -10,3 +10,7 @@ langchain
 langchain-nvidia-ai-endpoints
 whitenoise
 requests
+crewai
+crewai-tools
+langchain-openai
+litellm
