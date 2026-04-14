@@ -266,6 +266,50 @@ class MessageFormatter:
     MAX_LIST_ITEMS = 10  # Límite de items en lista interactiva
 
     @staticmethod
+    def clean_and_parse_response(text: str) -> tuple[str, list[dict]]:
+        """
+        Strips internal reasoning (Thoughts, etc.) and extracts LISTINGS_JSON.
+        Returns (clean_text, listings_list).
+        """
+        import re
+        import json
+        import logging
+        logger = logging.getLogger(__name__)
+
+        clean_text = str(text)
+
+        # 1. Strip CrewAI internal reasoning leaks
+        if "Thought:" in clean_text:
+            clean_text = re.sub(r"^\s*Thought:.*?\n\s*\n", "",
+                                    clean_text, flags=re.DOTALL | re.IGNORECASE).strip()
+
+        # 2. Strip common English reasoning preambles
+        reasoning_patterns = [
+            r"^Since\s.*?\n\n",
+            r"^Based\son\s.*?\n\n",
+            r"^I\swill\s.*?\n\n",
+            r"^I've\schecked\s.*?\n\n",
+            r"^To\sanswer\s.*?\n\n"
+        ]
+        for pattern in reasoning_patterns:
+            clean_text = re.sub(
+                pattern, "", clean_text, flags=re.IGNORECASE | re.DOTALL).strip()
+
+        # 3. Extract LISTINGS_JSON
+        listings_data = []
+        try:
+            tag_match = re.search(r"LISTINGS_JSON:(\[.*?\])", clean_text, re.DOTALL)
+            if tag_match:
+                json_str = tag_match.group(1).strip()
+                listings_data = json.loads(json_str)
+                # Remove the tag from final response shown to user
+                clean_text = clean_text.replace(tag_match.group(0), "").strip()
+        except Exception as e:
+            logger.warning(f"Failed to parse LISTINGS_JSON in WhatsApp formatter: {e}")
+
+        return clean_text, listings_data
+
+    @staticmethod
     def extract_actions(text: str) -> Dict:
         """
         Extrae patrones de botones [Título](action:ID) del texto.

@@ -38,11 +38,8 @@ ALLOWED_HOSTS = [
     '127.0.0.1',
     'ai-api.mequedo.app',  # Tu nuevo subdominio para la IA
     '.railway.app',        # Permitir subdominios de Railway
-    'whatsapp-test.mequedo.app',  # Cloudflare tunnel para testing local
     'ai-whatsapp.mequedo.app',  # Tu nuevo túnel de Cloudflare
-    'chilly-groups-film.loca.lt',
-    '26e48ae50db65c.lhr.life',
-    'kzpoc-38-248-169-32.run.pinggy-free.link'
+    'ltdau-38-248-169-118.run.pinggy-free.link'
 ]
 
 if RAILWAY_URL:

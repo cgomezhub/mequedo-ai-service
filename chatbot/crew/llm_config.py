@@ -40,7 +40,8 @@ def get_fast_llm() -> LLM | None:
         return LLM(
             model="gpt-4o-mini",
             temperature=0.2,
-            max_tokens=500
+            max_tokens=500,
+            timeout=25
         )
 
     if os.getenv("NVIDIA_API_KEY"):
@@ -49,7 +50,8 @@ def get_fast_llm() -> LLM | None:
             model="nvidia_nim/meta/llama3-8b-instruct",
             api_key=os.getenv("NVIDIA_API_KEY"),
             temperature=0.2,
-            max_tokens=500
+            max_tokens=500,
+            timeout=25
         )
 
     if os.getenv("GEMINI_API_KEY"):
@@ -58,7 +60,8 @@ def get_fast_llm() -> LLM | None:
             model="gemini/gemini-flash-latest",
             api_key=os.getenv("GEMINI_API_KEY"),
             temperature=0.2,
-            max_tokens=500
+            max_tokens=500,
+            timeout=25
         )
 
     logger.error("No valid API key found for Fast LLM. Set GEMINI_API_KEY, OPENAI_API_KEY, or NVIDIA_API_KEY.")
@@ -81,7 +84,8 @@ def get_deep_llm() -> LLM | None:
         return LLM(
             model="gpt-4o",
             temperature=0.4,
-            max_tokens=1000
+            max_tokens=1000,
+            timeout=45
         )
 
     if os.getenv("NVIDIA_API_KEY"):
@@ -90,7 +94,8 @@ def get_deep_llm() -> LLM | None:
             model="nvidia_nim/meta/llama3-70b-instruct",
             api_key=os.getenv("NVIDIA_API_KEY"),
             temperature=0.4,
-            max_tokens=1000
+            max_tokens=1000,
+            timeout=45
         )
 
     if os.getenv("GEMINI_API_KEY"):
@@ -99,7 +104,8 @@ def get_deep_llm() -> LLM | None:
             model="gemini/gemini-pro-latest",
             api_key=os.getenv("GEMINI_API_KEY"),
             temperature=0.4,
-            max_tokens=1000
+            max_tokens=1000,
+            timeout=45
         )
 
     logger.error("No valid API key found for Deep LLM. Set GEMINI_API_KEY, OPENAI_API_KEY, or NVIDIA_API_KEY.")
@@ -119,7 +125,8 @@ def get_fallback_llm() -> LLM | None:
             model="gemini/gemini-flash-latest",
             api_key=os.getenv("GEMINI_API_KEY"),
             temperature=0.3,
-            max_tokens=800
+            max_tokens=800,
+            timeout=30
         )
 
     if os.getenv("OPENAI_API_KEY"):
@@ -127,7 +134,8 @@ def get_fallback_llm() -> LLM | None:
         return LLM(
             model="gpt-4o-mini",
             temperature=0.3,
-            max_tokens=800
+            max_tokens=800,
+            timeout=30
         )
 
     logger.error("No fallback LLM available. Set GEMINI_API_KEY or OPENAI_API_KEY.")

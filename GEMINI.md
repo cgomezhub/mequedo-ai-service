@@ -1,6 +1,6 @@
 # Gemini Project Context: Mequedo AI Service
 
-This project is a Django-based AI service for **Mequedo**, an accommodation platform in Venezuela. It provides a chatbot (Laura) for searching listings and integrates with WhatsApp for notifications and interactions.
+This project is a Django-based AI service for **Mequedo**, an accommodation platform in Venezuela. It provides a chatbot (Karen) for searching listings and integrates with WhatsApp for notifications and interactions.
 
 ## Tech Stack
 
@@ -10,9 +10,9 @@ This project is a Django-based AI service for **Mequedo**, an accommodation plat
 - **Database:** MongoDB (Listings, Locations, Scheduled Tasks) and SQLite (Django default)
 - **Integrations:** WhatsApp Cloud API (Using background threading)
 
-## Core Persona: Laura
+## Core Persona: Karen
 
-- **Name:** Laura
+- **Name:** Karen
 - **Role:** Accommodation search assistant for Mequedo in Venezuela.
 - **Tone:** Professional, helpful, and concise.
 - **Language:** Primarily Spanish for user interactions.
@@ -60,7 +60,7 @@ This project is a Django-based AI service for **Mequedo**, an accommodation plat
 
 When assisting with this codebase:
 
-- Maintain the "Laura" persona logic when editing chatbot prompts.
+- Maintain the "Karen" persona logic when editing chatbot prompts.
 - Prefer clear, modular code.
 - Ensure any new endpoints follow the established DRF patterns used in the project.
 - Respect the existing mixture of English (for code/logic) and Spanish (for user-facing content and some comments).

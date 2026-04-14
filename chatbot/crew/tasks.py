@@ -23,7 +23,11 @@ def get_intent_extraction_task(agent) -> Task:
             to personalize the conversation before proceeding.
             
             CRITICAL INSTRUCTION: Output a clean, concise text summary of what the user wants and the specific parameters 
-            they requested. Include any relevant user context (name, pending reservations) if available. 
+            they requested. 
+            - VERIFY LOCATION: If the user provides a city name with obvious typos (e.g., 'barqusimeto', 'valensia', 'caraka'), 
+              YOU MUST CORRECT IT to the standard Venezuelan spelling (e.g., 'Barquisimeto', 'Valencia', 'Caracas') 
+              in your summary for the Specialist.
+            Include any relevant user context (name, pending reservations) if available. 
             Do NOT output JSON. Do NOT wrap items in arrays. Just provide a clear set of instructions 
             for the next agent (the Specialist) to read.
         """),
@@ -51,6 +55,10 @@ def get_qa_validation_task(agent) -> Task:
             Critically review the retrieved database listings from the Specialist and ensure they align explicitly 
             with the user's previously extracted parameters (like max price, location, bedrooms).
             Flag any accommodations that do not exist or violate rules. Hand off only factual listings.
+            
+            CRITICAL INSTRUCTION FOR AVAILABILITY: Our database currently does NOT return date or availability 
+            information (e.g., 'next weekend'). If the user requests specific dates, you MUST ASSUME the returned 
+            listings are available. Do NOT reject or flag listings simply because they lack explicit date confirmation.
         """),
         expected_output="A validated, strictly factual array of accommodations perfectly matching the user's formatting logic without hallucinations.",
         agent=agent,
@@ -62,24 +70,30 @@ def get_format_reply_task(agent: Task) -> Task:
     return Task(
         description=dedent("""
             Synthesize the validated listings or answers into a beautifully formatted, conversational 
-            Spanish message as Karen. Use the previous history ({conversation_history}) to ensure
-            your tone and answers are consistent with the current dialogue.
-            Current Session ID: '{session_id}'
+            message as Karen. 
+            
+            Authenticated User ID: '{user_id}'
+            Note: If the User ID is NOT 'WEB_ANONYMOUS' or 'WEB_FRONTEND', the user is logged in. Use their context natively.
+            
+            IDIOMA: Tu respuesta debe estar EXCLUSIVAMENTE en ESPAÑOL.
+            
+            CRITICAL - ECOSISTEMA DE DATOS (LISTINGS):
+            If the Researcher found properties:
+            1. You MUST ONLY include the Top 3 (MAXIMUM) in your conversational text to avoid overwhelming the user.
+            2. You MUST include a hidden data block at the very end (containing up to 6 results if found) exactly in this format:
+               LISTINGS_JSON:[{{"title": "...", "price": 0, "category": "...", "city": "...", "slug": "...", "guests": 0, "bedrooms": 0, "bathrooms": 0}}]
+            3. You MUST ALWAYS include the manual search button: [Buscar Manualmente](action:OPEN_SEARCH).
             
             CONSTRAINTS:
             - Max length: 3 paragraphs (approx 150 words).
-            - Only use information from the Specialist's findings or your 'Mequedo Platform Knowledge' tool.
-            - If the user needs to register/verify/list/navigate, include the appropriate Interactive Button syntax:
-                - Registration: [Registrarme](action:START_REGISTRATION)
-                - ID Verification: [Verificar Identidad](action:START_ID_VERIFICATION)
-                - New Listing: [Publicar Alojamiento](action:START_RENT_PROCESS)
-                - Check own My Trips/Reservations: [Ver mis reservaciones](action:GO_TO_TRIPS)
-                - Check own Listings/Properties: [Ver mis anuncios](action:GO_TO_PROPERTIES)
-            - If the user asks about platform features (like registration) and the tool gives no info, ADMIT you don't know and offer human help.
-            - Be polite and use emojis sparsely.
-            - NEVER include any internal reasoning, pre-text like 'Thought:', or 'Final Answer:' in your output. Your response MUST be solely and exclusively the direct message intended for the user.
+            - AUTH: Greeters users by name if authenticated. Use [Iniciar Sesión](action:START_LOGIN) ONLY for guests.
+            - Only use information from the Specialist's findings.
+            - NO PREAMBLE: Start your response directly with the greeting. NEVER include reasoning like 'Based on the search results...' or 'Since no results were found...'. 
+            - NO INTERNAL THOUGHTS: Do not output your thinking process.
+            - HALLUCINATION: NUNCA inventes descripciones (ej. "quiet neighborhood", "vistas al mar") si no están en los datos del Researcher.
+            - Tu respuesta final debe ser EXCLUSIVAMENTE el mensaje directo al usuario en Español.
         """),
-        expected_output="A concise conversational string (max 3 paragraphs) including interactive buttons if necessary.",
+        expected_output="A conversational Spanish string (max 3 paragraphs) with an OPEN_SEARCH button and a hidden LISTINGS_JSON block.",
         agent=agent,
         callback=log_conversation_callback
     )

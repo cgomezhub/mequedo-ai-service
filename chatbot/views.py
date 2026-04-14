@@ -25,67 +25,12 @@ logger = logging.getLogger(__name__)
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
-# ============ CONSTANTES DE SEGURIDAD ============
-MAX_MESSAGE_LENGTH = 500
-MAX_LISTINGS_RETURN = 10
-
-# ============ PATRONES SOSPECHOSOS (Prompt Injection) ============
-SUSPICIOUS_PATTERNS = [
-    # Instruction revelation attempts (Spanish)
-    r'revela(r)?\s+(tus|las|mis)?\s*instrucciones?',
-    r'muestra(me)?\s+(tus|las|mis)?\s*instrucciones?',
-    r'cu[aá]les?\s+son\s+(tus|las)?\s*instrucciones?',
-    r'dime\s+(tus|las)?\s*instrucciones?',
-    r'qu[eé]\s+(son\s+)?tus\s+reglas',
-    r'cu[aá]l\s+es\s+tu\s+(prompt|sistema)',
-
-    # Instruction revelation attempts (English)
-    r'show\s+(me\s+)?(your\s+)?(system\s+)?instructions?',
-    r'what\s+are\s+your\s+(system\s+)?instructions?',
-    r'reveal\s+(your\s+)?instructions?',
-    r'print\s+(your\s+)?(system\s+)?(prompt|instructions?)',
-    r'repeat\s+(your\s+)?(system\s+)?(instructions?|prompt)',
-    r'tell\s+me\s+your\s+(rules|instructions?)',
-    r'what\s+(are\s+)?your\s+rules',
-
-    # Classic prompt injection
-    r'ignore\s+(all\s+)?previous\s+instructions?',
-    r'you\s+are\s+now',
-    r'system\s*:',
-    r'<script',
-    r'javascript:',
-    r'onerror\s*=',
-    r'onclick\s*=',
-    r'\broot\b',
-    r'\bsudo\b',
-    r'grant\s+(me\s+)?access',
-    r'\badmin\b',
-]
-
-# ============ FUNCIONES DE SEGURIDAD ============
-
-
-def sanitize_message(message: str) -> str:
-    """
-    Sanitiza el mensaje del usuario para prevenir inyecciones.
-    """
-    if not message:
-        return ""
-
-    # Eliminar caracteres peligrosos
-    sanitized = message.strip()
-    sanitized = re.sub(r'[<>]', '', sanitized)  # Eliminar < y >
-
-    # Limitar longitud
-    return sanitized[:MAX_MESSAGE_LENGTH]
-
-
-def contains_suspicious_content(message: str) -> bool:
-    """
-    Detecta patrones sospechosos de prompt injection.
-    """
-    return any(re.search(pattern, message, re.IGNORECASE)
-               for pattern in SUSPICIOUS_PATTERNS)
+from .utils import (
+    MAX_MESSAGE_LENGTH,
+    SUSPICIOUS_PATTERNS,
+    sanitize_message,
+    contains_suspicious_content
+)
 
 
 def is_valid_objectid(oid) -> bool:
@@ -103,9 +48,9 @@ def is_valid_objectid(oid) -> bool:
 
 class ChatbotThrottle(AnonRateThrottle):
     """
-    Rate limiting: 10 requests por minuto por IP.
+    Rate limiting: 120 requests por minuto por IP.
     """
-    rate = '10/minute'
+    rate = '120/minute'
 
 # --- Configuración de Conexiones (fuera de la vista para eficiencia) ---
 
@@ -509,7 +454,7 @@ def _kickoff_with_retry(crew, inputs: dict, max_retries: int = 3) -> str:
     raise last_exception  # Safety fallback
 
 
-def _run_crew_in_background(session_id: str, user_message: str, user_id: str):
+def _run_crew_in_background(session_id: str, user_message: str, user_id: str, message_id=None):
     """
     Background thread worker: executes MequedoCrew and persists the result
     in MongoDB under the 'ChatSessions' collection keyed by session_id.
@@ -542,50 +487,25 @@ def _run_crew_in_background(session_id: str, user_message: str, user_id: str):
                 history_context = "\n---\n".join(history_lines)
 
         # =========================================================
-        # TEMPLATE SHORT-CIRCUIT: Save LLM Tokens for static FAQs
+        # SECURITY & TEMPLATE SHORT-CIRCUIT
         # =========================================================
-        normalized_msg = user_message.strip().lower()
-        crew_output = None
+        from .templates import get_short_circuit_response
+        
+        # 1. Sanitize & Check Length
+        user_message = sanitize_message(user_message)
+        
+        # 2. Check for Prompt Injection / Suspicious patterns
+        if contains_suspicious_content(user_message):
+            logger.warning(f"Suspicious content detected from user {user_id}: {user_message}")
+            crew_output = (
+                "¡Hola! Soy Laura. Mi sistema de seguridad ha detectado patrones inusuales en tu mensaje. "
+                "Por favor, asegúrate de realizar consultas relacionadas con la búsqueda de alojamientos en Mequedo."
+            )
+        else:
+            # 3. Check for templates (FAQ, Menu, Gibberish, etc.)
+            crew_output = get_short_circuit_response(user_message, user_id)
 
-        if normalized_msg == "¿quiénes son ustedes y por qué confiar en mequedo?":
-            crew_output = (
-                "¡Hola! Mequedo es la plataforma líder en renta y reserva de alojamientos en Venezuela. "
-                "Nuestro objetivo es transformar la forma de hospedarse en el país, ofreciendo un entorno seguro, profesional y verificado.\n\n"
-                "Para empezar a disfrutar de nuestras opciones, [Registrarme](action:START_REGISTRATION) es el primer paso. "
-                "Si ya tienes una cuenta, pero no has verificado tu identidad, por favor selecciona [Verificar Identidad](action:START_ID_VERIFICATION) para continuar."
-            )
-        elif normalized_msg == "preguntas frecuentes sobre la plataforma" or normalized_msg == "preguntas frecuentes":
-            crew_output = (
-                "¡Claro! Estas son algunas de las dudas más comunes sobre Mequedo:\n\n"
-                "**1. ¿Es seguro alquilar por aquí?**\n\n"
-                "100%. Utilizamos integración con Didit para validar la identidad de todos nuestros usuarios y anfitriones.\n\n"
-                "**2. ¿Cómo publico mi alojamiento?**\n\n"
-                "Debes tener tu cuenta registrada y verificada. Luego, utiliza la opción [Publicar mi alojamiento](action:START_RENT_PROCESS)\n\n"
-                "**3. ¿Cómo me registro?**\n\n"
-                "Solo haz clic aquí: [Crear mi cuenta](action:START_REGISTRATION)\n\n"
-                "**4. ¿Cuentan con respaldo legal en Venezuela?**\n\n"
-                "Sí, estamos legalmente constituidos en Venezuela y tenemos fuertes alianzas con *12 Tablas* y los Abogados de *Doctores Condominio* para ofrecer seguridad jurídica en ambas direcciones. "
-                "Puedes conocer un poco de nosotros a continuación:\n\n"
-                "<iframe width=\"100%\" height=\"350\" src=\"https://www.youtube.com/embed/5r9x0GuHd_U\" frameborder=\"0\" allow=\"accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture\" allowfullscreen style=\"border-radius: 12px; margin-top: 10px;\"></iframe>"
-            )
-        elif normalized_msg == "términos y condiciones de servicio" or normalized_msg == "términos y reglas":
-            crew_output = (
-                "Para mantener nuestro Ecosistema Mequedo seguro y proteger tanto a Anfitriones como a Viajeros, aquí te presento **las 5 reglas de oro**:\n\n"
-                "**1. Edades y Verificación:** \n\n"
-                "Solo mayores de 18 años pueden rentar. La validación de identidad con Didit es estrictamente obligatoria.\n\n"
-                "**2. Tarifas Transparentes:** \n\n"
-                "La plataforma cobra hasta un 5% de comisión al Anfitrión y hasta un 15% al Viajero para mantener el servicio activo, ciertas promociones y condiciones aplican.\n\n"
-                "**3. Pagos y Transacciones:** \n\n"
-                "Está *estrictamente prohibido* pagar en efectivo o contactar directamente cuentas bancarias externas. Todo se procesa en las cuentas bancarias de Mequedo.\n\n"
-                "**4. Comunicaciones:** \n\n"
-                "Por tu seguridad, no compartas números de teléfono ni correos personales. Usa siempre el chat interno entre usuarios.\n\n"
-                "**5. Seguros (Alojamiento y Viajero):** \n\n"
-                "   - *Anfitriones:* Recomendamos adquirir un seguro de alojamiento (opcional), siendo tú el responsable directo.\n\n"
-                "   - *Viajeros:* Tienen la opción de contratar un seguro de viaje con nuestro aliado estratégico **[TuDrenViajes](https://www.tudrenviajes.com/)** durante el proceso de reserva.\n\n"
-                "> 🔗 Puedes leer el documento legal completo aquí: [Términos y Condiciones de Mequedo](https://mequedo.app/terms-conditions)"
-            )
-
-        # If it wasn't a template, hit the CrewAI orchestrator
+        # If it wasn't a template or blocked, hit the CrewAI orchestrator
         if not crew_output:
             crew = MequedoCrew()
             crew_output = _kickoff_with_retry(crew, {
@@ -600,16 +520,53 @@ def _run_crew_in_background(session_id: str, user_message: str, user_id: str):
         )
 
         # Safety-net: Strip CrewAI internal reasoning leaks (e.g. "Thought: ...\n\nActual response")
+        # and also common English reasoning patterns like "Since no listings...", "Based on...", etc.
         if "Thought:" in final_response:
-            final_response = re.sub(r"^\s*Thought:.*?\n\s*\n", "", final_response, flags=re.DOTALL | re.IGNORECASE).strip()
+            final_response = re.sub(r"^\s*Thought:.*?\n\s*\n", "",
+                                    final_response, flags=re.DOTALL | re.IGNORECASE).strip()
+
+        # Strip common English reasoning preambles that sometimes leak from LLMs
+        reasoning_patterns = [
+            r"^Since\s.*?\n\n",
+            r"^Based\son\s.*?\n\n",
+            r"^I\swill\s.*?\n\n",
+            r"^I've\schecked\s.*?\n\n",
+            r"^To\sanswer\s.*?\n\n"
+        ]
+        for pattern in reasoning_patterns:
+            final_response = re.sub(
+                pattern, "", final_response, flags=re.IGNORECASE | re.DOTALL).strip()
+
+        # =========================================================
+        # PARSE LISTINGS_JSON: Extract structured data for frontend
+        # =========================================================
+        listings_data = []
+        try:
+            import json
+            # Look for LISTINGS_JSON:[{...}] at the end or anywhere in text
+            tag_match = re.search(
+                r"LISTINGS_JSON:(\[.*?\])", final_response, re.DOTALL)
+            if tag_match:
+                json_str = tag_match.group(1).strip()
+                listings_data = json.loads(json_str)
+                # Remove the tag from final response shown to user
+                final_response = final_response.replace(
+                    tag_match.group(0), "").strip()
+                logger.info(
+                    f"Extracted {len(listings_data)} listings from Crew output.")
+        except Exception as parse_err:
+            logger.warning(f"Failed to parse LISTINGS_JSON: {parse_err}")
 
         db = get_db()
         if db is not None:
+            query = {"_id": message_id} if message_id else {
+                "session_id": session_id}
             db.get_collection("ChatSessions").update_one(
-                {"session_id": session_id},
+                query,
                 {"$set": {
                     "status": "completed",
                     "response": final_response,
+                    "listings": listings_data,
                     "completed_at": datetime.datetime.now(datetime.timezone.utc)
                 }},
                 upsert=True
@@ -629,8 +586,10 @@ def _run_crew_in_background(session_id: str, user_message: str, user_id: str):
                     if is_rate_limit
                     else "El asistente encontró un problema. Por favor intenta de nuevo."
                 )
+                query = {"_id": message_id} if message_id else {
+                    "session_id": session_id}
                 db.get_collection("ChatSessions").update_one(
-                    {"session_id": session_id},
+                    query,
                     {"$set": {
                         "status": "error",
                         "response": user_facing_error,
@@ -650,7 +609,7 @@ class ChatbotAsyncView(APIView):
     The frontend polls /api/query/status/?session_id= every 2-3 seconds.
     This permanently eliminates Vercel/NextJS 30-second serverless timeout errors.
     """
-    throttle_classes = [ChatbotThrottle]
+    # Rate limiting handled by Next.js frontend proxy
 
     def post(self, request, *args, **kwargs):
         # Validate Internal Secret
@@ -670,12 +629,46 @@ class ChatbotAsyncView(APIView):
             return Response({"error": "El mensaje es requerido."}, status=status.HTTP_400_BAD_REQUEST)
         if len(user_message) > MAX_MESSAGE_LENGTH:
             return Response({"error": f"Mensaje demasiado largo (máximo {MAX_MESSAGE_LENGTH} caracteres)."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Pre-check for suspicious content or templates to avoid unnecessary processing
         if contains_suspicious_content(user_message):
-            logger.warning(
-                f"⚠️ Prompt injection attempt from user_id={user_id}")
-            return Response({"error": "Mensaje no permitido."}, status=status.HTTP_400_BAD_REQUEST)
+            logger.warning(f"⚠️ Prompt injection attempt from user_id={user_id}")
+            return Response({
+                "response": "¡Hola! Soy Laura. Mi sistema de seguridad ha detectado patrones inusuales en tu mensaje. Por favor, asegúrate de realizar consultas relacionadas con la búsqueda de alojamientos en Mequedo.",
+                "status": "blocked"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         sanitized_message = sanitize_message(user_message)
+
+        # ============ INSTANT TEMPLATE CHECK ============
+        # Check for fast-path responses (Greetings, Menu, FAQ, Gibberish, etc.)
+        # to return them immediately and save server resources.
+        from .templates import get_short_circuit_response
+        template_response = get_short_circuit_response(sanitized_message, user_id)
+        if template_response:
+            session_id = request.data.get("session_id") or str(uuid.uuid4())
+            try:
+                from chatbot.crew.tools.search_accommodation import get_db
+                db = get_db()
+                if db is not None:
+                    db.get_collection("ChatSessions").insert_one({
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "user_message": sanitized_message,
+                        "status": "completed",
+                        "response": template_response,
+                        "listings": [],
+                        "created_at": datetime.datetime.now(datetime.timezone.utc),
+                        "completed_at": datetime.datetime.now(datetime.timezone.utc)
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to persist instant ChatSession: {e}")
+
+            # Return 202 to maintain compatibility with Next.js polling logic
+            return Response(
+                {"session_id": session_id, "status": "processing"},
+                status=status.HTTP_202_ACCEPTED
+            )
 
         # ============ SESSION HANDLING ============
         # If the frontend provides a session_id, we reuse it.
@@ -685,24 +678,26 @@ class ChatbotAsyncView(APIView):
             session_id = str(uuid.uuid4())
 
         # ============ PERSIST PENDING SESSION ============
+        message_id = None
         try:
             from chatbot.crew.tools.search_accommodation import get_db
             db = get_db()
             if db is not None:
-                db.get_collection("ChatSessions").insert_one({
+                result = db.get_collection("ChatSessions").insert_one({
                     "session_id": session_id,
                     "user_id": user_id,
                     "user_message": sanitized_message,
                     "status": "processing",
                     "created_at": datetime.datetime.now(datetime.timezone.utc)
                 })
+                message_id = result.inserted_id
         except Exception as e:
             logger.warning(f"Failed to persist ChatSession: {e}")
 
         # ============ DISPATCH BACKGROUND THREAD ============
         thread = threading.Thread(
             target=_run_crew_in_background,
-            args=(session_id, sanitized_message, user_id),
+            args=(session_id, sanitized_message, user_id, message_id),
             daemon=True
         )
         thread.start()
@@ -722,7 +717,7 @@ class ChatbotStatusView(APIView):
     Polling endpoint for the Next.js frontend.
     Called every 2-3 seconds with ?session_id=<id> until status == 'completed'.
     """
-    throttle_classes = [ChatbotThrottle]
+    # Throttle removed to prevent 429 Too Many Requests blocking Next.js proxy
 
     def get(self, request, *args, **kwargs):
         session_id = request.query_params.get("session_id", "")
@@ -737,7 +732,8 @@ class ChatbotStatusView(APIView):
 
             session = db.get_collection("ChatSessions").find_one(
                 {"session_id": session_id},
-                {"status": 1, "response": 1, "ui_action": 1, "_id": 0}
+                {"status": 1, "response": 1, "ui_action": 1, "listings": 1, "_id": 0},
+                sort=[("created_at", -1)]
             )
 
             if not session:
@@ -747,7 +743,7 @@ class ChatbotStatusView(APIView):
                 return Response({
                     "status": session["status"],
                     "response": session.get("response", ""),
-                    "listings": [],
+                    "listings": session.get("listings", []),
                     # Triggers modals on frontend
                     "ui_action": session.get("ui_action")
                 }, status=status.HTTP_200_OK)
