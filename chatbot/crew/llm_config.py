@@ -2,7 +2,6 @@ import os
 import logging
 from dotenv import load_dotenv
 from crewai import LLM
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
 logger = logging.getLogger(__name__)

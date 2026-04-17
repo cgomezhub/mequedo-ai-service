@@ -64,9 +64,9 @@ try:
     db = client.get_database(os.getenv("MONGODB_DB_NAME", "test"))
     listings_collection = db.get_collection("Listing")
     locations_collection = db.get_collection("Location")
-    print("✅ Conexión a MongoDB exitosa.")
+    logger.info("✅ Conexión a MongoDB exitosa.")
 except Exception as e:
-    print(f"❌ Error al conectar a MongoDB: {e}")
+    logger.error(f"❌ Error al conectar a MongoDB: {e}")
     listings_collection = locations_collection = None
 
 # 2. Conexión al LLM (ahora gestionada centralmente en chatbot/crew/llm_config.py)

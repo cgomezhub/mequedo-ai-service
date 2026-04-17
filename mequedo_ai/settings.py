@@ -88,7 +88,6 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'chatbot.middleware.HealthCheckMiddleware',
-    'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # Añadir middleware de CORS
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -186,7 +185,9 @@ REST_FRAMEWORK = {
     }
 }
 
-# Logging mejorado
+# Logging
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'DEBUG' if DEBUG else 'INFO').upper()
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -213,16 +214,16 @@ LOGGING = {
         },
         'chatbot': {  # Tu app específica
             'handlers': ['console'],
-            'level': 'DEBUG' if DEBUG else 'INFO',
+            'level': LOG_LEVEL,
         },
         'whatsapp_integration': {  # WhatsApp integration
             'handlers': ['console'],
-            'level': 'DEBUG' if DEBUG else 'INFO',
+            'level': LOG_LEVEL,
         },
     },
     'root': {
         'handlers': ['console'],
-        'level': 'INFO',
+        'level': LOG_LEVEL,
     },
 }
 
