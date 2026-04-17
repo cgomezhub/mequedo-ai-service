@@ -39,7 +39,7 @@ ALLOWED_HOSTS = [
     'ai-api.mequedo.app',  # Tu nuevo subdominio para la IA
     '.railway.app',        # Permitir subdominios de Railway
     'ai-whatsapp.mequedo.app',  # Tu nuevo túnel de Cloudflare
-    'ltdau-38-248-169-118.run.pinggy-free.link'
+    'hxvvm-38-248-171-181.run.pinggy-free.link'
 ]
 
 if RAILWAY_URL:

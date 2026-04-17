@@ -21,10 +21,11 @@ def get_accommodation_specialist() -> Agent:
         verbose=True,
         allow_delegation=False,
         llm=get_fast_llm() or get_deep_llm(),
-        max_iter=3, # Limits tool retry loops (fault tolerance)
-        max_execution_time=30, # Faster fail-safe timeout
-        tools=[SearchAccommodationTool()]
+        max_iter=3,  # Limits tool retry loops (fault tolerance)
+        max_execution_time=60,  # Faster fail-safe timeout
+        tools=[SearchAccommodationTool(), MequedoInternalCRMTool()]
     )
+
 
 def get_customer_support_agent() -> Agent:
     """
@@ -32,7 +33,8 @@ def get_customer_support_agent() -> Agent:
     """
     # Now that async polling eliminates frontend timeouts, Laura can use the powerful 70B deep model
     # for higher quality, more personalized Spanish responses with full CRM context awareness.
-    llm = get_deep_llm() or get_fast_llm()
+    # [HOTFIX] Changed to fast tier to avoid Google Gemini 1.5 Pro free-tier 2 RPM rate-limit crashes.
+    llm = get_fast_llm()
 
     return Agent(
         role="Mequedo Customer Support (Karen)",
@@ -41,31 +43,34 @@ def get_customer_support_agent() -> Agent:
             "You are Karen, the professional virtual assistant for Mequedo. "
             "IDIOMA: Responde siempre y exclusivamente en ESPAÑOL (Castellano). \n\n"
             "AUTHENTICATION LOGIC: "
-            "  - ALWAYS check the user's login state from previous context tools. "
-            "  - If 'Authenticated User ID' is NOT 'WEB_ANONYMOUS', the user is LOGGED IN. Greet them by name. DO NOT ask them to register or login. "
-            "  - If user is 'WEB_ANONYMOUS', they are a GUEST. If they want to book or list, offer [Iniciar Sesión](action:START_LOGIN) or [Registrarme](action:START_REGISTRATION). \n\n"
+            "  - LOGGED IN USERS ONLY: You are only triggered for registered members. Greet them by name if available. "
+            "  - DASHBOARD REDIRECTS: If the user asks about managing their own publications, houses, profile, or messages, INFORM them they can manage them directly in their dashboard and DO NOT use tools. \n\n"
             "SEARCH RESULTS (MAX 3): "
-            "  - If the Researcher finds properties, you MUST ONLY provide details for the Top 3 (MAXIMUM). "
+            "  - LOGGED IN USERS ONLY: If properties were found by the Specialist for a registered member, provide details for the Top 3 (MAXIMUM). "
             "  - NEVER invent amenities or details (quiet neighborhood, ocean view) unless explicitly in the search result. \n\n"
             "CRITICAL: If a user asks about how the platform works, check your 'Mequedo Platform Knowledge' tool. \n\n"
-            "INTERACTIVE UI ACTIONS: "
+            "INTERACTIVE UI ACTIONS: \n"
             "Provide clickable buttons: [Label](action:ACTION_NAME). Actions: \n"
             "- 'START_LOGIN', 'START_REGISTRATION', 'OPEN_SEARCH', 'START_ID_VERIFICATION', 'START_RENT_PROCESS' \n"
             "- 'GO_TO_TRIPS' (reservations), 'GO_TO_PROPERTIES' (anuncios). \n\n"
-            "Keep your responses under 3 paragraphs."
+            "Keep your responses under 3 paragraphs. VARIETY: Do not always introduce yourself if the conversation is already active. "
+            "If you've already greeted the user, focus directly on their request."
         ),
         verbose=True,
         allow_delegation=True,
         llm=llm,
+        max_iter=3,
+        max_execution_time=60,
         tools=[
-            get_faq_scraper(), 
-            MequedoInternalCRMTool(), 
-            WhatsAppNotifierTool(), 
+            get_faq_scraper(),
+            MequedoInternalCRMTool(),
+            WhatsAppNotifierTool(),
             UserContextTool(),
             MequedoPlatformKnowledgeTool(),
             PlatformActionTool()
         ]
     )
+
 
 def get_quality_assurance_agent() -> Agent:
     """
@@ -78,5 +83,7 @@ def get_quality_assurance_agent() -> Agent:
         verbose=True,
         allow_delegation=False,
         llm=get_fast_llm() or get_deep_llm(),
+        max_iter=3,
+        max_execution_time=60,
         tools=[]
     )

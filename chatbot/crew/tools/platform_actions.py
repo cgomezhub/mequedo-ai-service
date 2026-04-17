@@ -11,8 +11,8 @@ class PlatformActionTool(BaseTool):
     name: str = "Platform Action Trigger"
     description: str = (
         "Triggers UI actions in the Next.js frontend. "
-        "Use this when the user needs to register, verify ID, or start a listing. "
-        "Valid actions: 'START_REGISTRATION', 'START_ID_VERIFICATION', 'START_RENT_PROCESS', 'START_ABOUT_US', 'START_FAQ', 'START_TERMS'. "
+        "Use this when the user needs to register, verify ID, start a listing, or open search. "
+        "Valid actions: 'START_REGISTRATION', 'START_LOGIN', 'OPEN_SEARCH', 'START_ID_VERIFICATION', 'START_RENT_PROCESS', 'START_ABOUT_US', 'START_FAQ', 'START_TERMS'. "
         "Requires the current session_id."
     )
 

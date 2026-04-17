@@ -41,19 +41,20 @@ class WhatsAppMessageHandler:
                 "USE_CREWAI", "False").lower() in ("true", "1", "yes")
             if use_crewai:
                 from chatbot.utils import sanitize_message, contains_suspicious_content, MAX_MESSAGE_LENGTH
-                
+
                 # 1. Sanitize & Length Check
                 message_text = sanitize_message(message_text)
                 if not message_text:
                     logger.info("Empty or invalid message after sanitization.")
                     return True
-                
+
                 # 2. Check for Prompt Injection / Suspicious patterns
                 if contains_suspicious_content(message_text):
-                    logger.warning(f"Suspicious content detected from WhatsApp user {from_number}")
+                    logger.warning(
+                        f"Suspicious content detected from WhatsApp user {from_number}")
                     self.whatsapp_service.send_text_message(
-                        from_number, 
-                        "¡Hola! Soy Laura. Mi sistema de seguridad ha detectado patrones inusuales en tu mensaje. Por favor, asegúrate de realizar consultas relacionadas con la búsqueda de alojamientos en Mequedo."
+                        from_number,
+                        "Mi sistema de seguridad ha detectado patrones inusuales en tu mensaje. Por favor, asegúrate de realizar consultas relacionadas con la búsqueda de alojamientos en Mequedo."
                     )
                     return True
 
@@ -91,7 +92,6 @@ class WhatsAppMessageHandler:
                     # 2. Si es una acción UI, actualizar la base de datos para el frontend (si aplica)
                     if action_key in ui_triggers:
                         try:
-                            from .database import get_db  # Assuming get_db is available or handled further down
                             db = get_db()
                             if db is not None:
                                 db.get_collection("ChatSessions").update_one(
@@ -108,7 +108,7 @@ class WhatsAppMessageHandler:
                     return
 
                 # --- STEP A: Fast Template Check (Short-Circuit) ---
-                from chatbot.templates import get_short_circuit_response
+                from chatbot.templates import get_short_circuit_response, get_default_guest_fallback
                 # We use "WEB_ANONYMOUS" or "wa_..." to indicate they aren't authenticated yet in context of CRM
                 fast_response = get_short_circuit_response(
                     message_text, session_id)
@@ -118,58 +118,80 @@ class WhatsAppMessageHandler:
                         f"⚡ Fast Template triggered for WhatsApp user {from_number}")
                     crew_output = fast_response
                 else:
-                    # --- STEP B: Heavy Logic (CrewAI) ---
-                    # 2. Fetch conversation history from MongoDB to satisfy CrewAI template requirements
-                    conversation_history = ""
+                    # --- GUEST FIREWALL (WhatsApp) ---
+                    # Check if this WhatsApp number belongs to a registered user
                     try:
-                        from pymongo import MongoClient
-                        import certifi
-                        client = MongoClient(os.getenv(
-                            "DATABASE_URL"), tlsCAFile=certifi.where(), serverSelectionTimeoutMS=2000)
-                        db = client.get_database(
-                            os.getenv("MONGODB_DB_NAME", "test"))
-                        conversations_col = db.get_collection("Conversations")
+                        db = get_db()
+                        user_info = None
+                        if db is not None:
+                            user_info = db.get_collection("User").find_one({
+                                "phoneNumber": {"$in": [from_number, f"+{from_number}"]}
+                            })
 
-                        # Get last 5 messages for context
-                        history_docs = list(conversations_col.find(
-                            {"user_id": from_number},
-                            sort=[("_id", -1)],
-                            limit=5
-                        ))
+                        if not user_info:
+                            logger.info(
+                                f"🛡️ WhatsApp Firewall blocked CrewAI for unregistered number: {from_number}")
+                            crew_output = get_default_guest_fallback(
+                                f"wa_{from_number}")
+                        else:
+                            # --- STEP B: Heavy Logic (CrewAI) for Members ---
+                            # 2. Fetch conversation history from MongoDB...
+                            try:
+                                from pymongo import MongoClient
+                                import certifi
+                                client = MongoClient(os.getenv(
+                                    "DATABASE_URL"), tlsCAFile=certifi.where(), serverSelectionTimeoutMS=2000)
+                                db = client.get_database(
+                                    os.getenv("MONGODB_DB_NAME", "test"))
+                                conversations_col = db.get_collection(
+                                    "Conversations")
 
-                        # Format history: "User: msg \nAI: resp"
-                        formatted_history = []
-                        for doc in reversed(history_docs):
-                            u_msg = doc.get("user_message", "")
-                            a_resp = doc.get("ai_response", "")
-                            if u_msg:
-                                formatted_history.append(f"User: {u_msg}")
-                            if a_resp:
-                                formatted_history.append(f"AI: {a_resp}")
+                                # Get last 5 messages for context
+                                history_docs = list(conversations_col.find(
+                                    {"user_id": from_number},
+                                    sort=[("_id", -1)],
+                                    limit=5
+                                ))
 
-                        conversation_history = "\n".join(formatted_history)
-                        if not conversation_history:
-                            conversation_history = "No previous history."
-                    except Exception as history_err:
-                        logger.warning(
-                            f"Failed to fetch conversation history: {history_err}")
-                        conversation_history = "History unavailable."
+                                # Format history: "User: msg \nAI: resp"
+                                formatted_history = []
+                                for doc in reversed(history_docs):
+                                    u_msg = doc.get("user_message", "")
+                                    a_resp = doc.get("ai_response", "")
+                                    if u_msg:
+                                        formatted_history.append(
+                                            f"User: {u_msg}")
+                                    if a_resp:
+                                        formatted_history.append(
+                                            f"AI: {a_resp}")
 
-                    from chatbot.crew.orchestrator import MequedoCrew
-                    crew = MequedoCrew()
+                                conversation_history = "\n".join(
+                                    formatted_history)
+                                if not conversation_history:
+                                    conversation_history = "No previous history."
+                            except Exception as history_err:
+                                logger.warning(
+                                    f"Failed to fetch conversation history: {history_err}")
+                                conversation_history = "History unavailable."
 
-                    # Provide all required template variables: user_id, user_message, conversation_history, session_id
-                    crew_output = crew.kickoff({
-                        "user_id": from_number,
-                        "user_message": message_text,
-                        "conversation_history": conversation_history,
-                        "session_id": session_id
-                    })
+                            from chatbot.crew.orchestrator import MequedoCrew
+                            crew = MequedoCrew()
 
-                if crew_output == "HUMAN_PAUSED":
-                    logger.info(
-                        f"Skipping automated response for {from_number} due to human bypass.")
-                    return True
+                            # Provide all required template variables: user_id, user_message, conversation_history, session_id
+                            crew_output = crew.kickoff({
+                                "user_id": from_number,
+                                "user_message": message_text,
+                                "conversation_history": conversation_history,
+                                "session_id": session_id
+                            })
+
+                            if crew_output == "HUMAN_PAUSED":
+                                logger.info(
+                                    f"Skipping automated response for {from_number} due to human bypass.")
+                                return True
+                    except Exception as firewall_err:
+                        logger.error(f"Error in WhatsApp firewall: {firewall_err}")
+                        crew_output = "Lo siento, hubo un problema al verificar tu cuenta. Por favor intenta de nuevo."
 
                 # --- STEP C: Response Cleaning & Parsing ---
                 # Strip internal reasoning and extract LISTINGS_JSON if present

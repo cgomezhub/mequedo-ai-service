@@ -1,3 +1,9 @@
+from .utils import (
+    MAX_MESSAGE_LENGTH,
+    SUSPICIOUS_PATTERNS,
+    sanitize_message,
+    contains_suspicious_content
+)
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -22,15 +28,12 @@ from langchain_core.prompts import PromptTemplate
 # ============ CONFIGURACIÓN DE LOGGING ============
 logger = logging.getLogger(__name__)
 
+# Global Response Cache for repeated identical queries (TTL 60s)
+# Format: { (user_id, normalized_msg): (response_dict, timestamp) }
+_RESPONSE_CACHE = {}
+
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
-
-from .utils import (
-    MAX_MESSAGE_LENGTH,
-    SUSPICIOUS_PATTERNS,
-    sanitize_message,
-    contains_suspicious_content
-)
 
 
 def is_valid_objectid(oid) -> bool:
@@ -66,26 +69,13 @@ except Exception as e:
     print(f"❌ Error al conectar a MongoDB: {e}")
     listings_collection = locations_collection = None
 
-# 2. Inicialización del LLM (usando el modelo de NVIDIA)
-try:
-    llm = ChatNVIDIA(
-        model="meta/llama3-8b-instruct",
-        nvidia_api_key=os.getenv("NVIDIA_API_KEY"),
-        temperature=0.2,
-        top_p=0.7,
-        max_tokens=500,
-    ).with_config({
-        "timeout": 25,
-        "max_retries": 1,
-    })
-    print("✅ LLM de NVIDIA inicializado.")
-except Exception as e:
-    print(f"❌ Error al inicializar el LLM de NVIDIA: {e}")
-    llm = None
+# 2. Conexión al LLM (ahora gestionada centralmente en chatbot/crew/llm_config.py)
+# Se inicializa bajo demanda para evitar errores de EOL en startup.
+# Ver process_chatbot_message para la lógica de lazy-loading.
 
 # 3. Plantilla de Prompt para LangChain
 template = """
-**Rol:** Eres Laura, la amigable y profesional asistente virtual de Mequedo, una plataforma de reserva de alojamientos en Venezuela.
+**Rol:** Eres Karen, la amigable y profesional asistente virtual de Mequedo, una plataforma de reserva de alojamientos en Venezuela.
 **Objetivo:** Ayudar a los usuarios a encontrar el alojamiento ideal basándote EXCLUSIVAMENTE en la base de datos de Mequedo, ofreciendo respuestas precisas, cálidas y útiles.
 **Historia (Backstory):** Eres una experta en turismo local y hospitalidad. Sabes lo importante que es encontrar un buen lugar para quedarse y siempre respondes con empatía y entusiasmo. Eres muy servicial, pero tienes claro que tu único propósito es ayudar con los alojamientos de Mequedo, por lo que desvías temas ajenos con cortesía, humor y simpatía.
 
@@ -218,13 +208,44 @@ def process_chatbot_message(user_message: str) -> dict:
     if use_crewai:
         try:
             from chatbot.crew.orchestrator import MequedoCrew
-            crew = MequedoCrew()
+            from chatbot.crew.intent_router import classify_intent_with_retry
 
             sanitized_message = sanitize_message(user_message)
+            user_id = "WEB_FRONTEND"
 
-            # Ejecutamos el flujo agéntico directamente
-            crew_output = crew.kickoff(
-                {"user_id": "WEB_FRONTEND", "user_message": sanitized_message})
+            # --- PRE-ROUTING ---
+            intent = classify_intent_with_retry(sanitized_message)
+            if intent.intent_type == "OUT_OF_SCOPE":
+                crew_output = "Entiendo, pero como Karen, mi pasión y única especialidad es ayudarte a encontrar los mejores alojamientos en Mequedo y gestionar tus reservaciones. ¿Hay alguna ciudad en Venezuela que te gustaría visitar pronto o necesitas ayuda con tu último viaje?"
+                return {
+                    "response": crew_output,
+                    "listings": []
+                }
+
+            crew = MequedoCrew(intent_type=intent.intent_type)
+            enriched_message = f"{sanitized_message}\n\n[ROUTED SYSTEM DATA: {intent.model_dump_json()}]"
+
+            # --- OPTIMIZACIÓN LLM: Caché de Respuestas (60s) ---
+            import time
+            from rest_framework.response import Response as DRFResponse
+
+            cache_key = (user_id, sanitized_message.lower().strip())
+            if cache_key in _RESPONSE_CACHE:
+                cached_res, timestamp = _RESPONSE_CACHE[cache_key]
+                if time.time() - timestamp < 60:
+                    logger.warning(
+                        f"🚀 [CACHE HIT] Respuesta instantánea para: '{sanitized_message}'")
+                    return DRFResponse(cached_res, status=status.HTTP_200_OK)
+
+            # Ejecutamos con el wrapper de reintentos y fallback automático
+            crew_output = _kickoff_with_retry(crew, {
+                "user_id": user_id,
+                "user_message": enriched_message
+            })
+
+            # Guardamos la respuesta para optimizar futuros envíos idénticos
+            _RESPONSE_CACHE[cache_key] = (
+                {"response": str(crew_output), "listings": []}, time.time())
 
             if crew_output == "HUMAN_PAUSED":
                 return {
@@ -260,7 +281,11 @@ def process_chatbot_message(user_message: str) -> dict:
             return {"error": "El asistente Multi-Agente está temporalmente indisponible."}
 
     # ============ FALLBACK: Servicios LangChain Legacy ============
-    if listings_collection is None or locations_collection is None or llm is None:
+    # Lazy loading of legacy LLM only when required to avoid startup overhead
+    from .crew.llm_config import get_langchain_llm
+    legacy_llm = get_langchain_llm(tier='fast')
+
+    if listings_collection is None or locations_collection is None or legacy_llm is None:
         logger.error("❌ Servicios legacy no configurados correctamente")
         return {"error": "El servicio está temporalmente no disponible."}
 
@@ -317,7 +342,7 @@ def process_chatbot_message(user_message: str) -> dict:
         ])
 
         # --- Paso 4: Ejecutar el LLM ---
-        chain = prompt | llm
+        chain = prompt | legacy_llm
         bot_response = chain.invoke({
             "available_cities": available_cities_str,
             "listings_context": listings_context,
@@ -327,7 +352,7 @@ def process_chatbot_message(user_message: str) -> dict:
         # ============ VALIDACIÓN DE RESPUESTA DEL LLM ============
         if not hasattr(bot_response, 'content') or not bot_response.content or not bot_response.content.strip():
             logger.error("❌ Respuesta vacía del LLM")
-            return {"error": "El asistente no pudo generar una respuesta. Intenta de nuevo."}
+            return {"error": "El asistente no pudo generar una respuesta. Intenta de nuevo en unos minutos."}
 
         return {
             "response": bot_response.content,
@@ -406,49 +431,79 @@ def _kickoff_with_retry(crew, inputs: dict, max_retries: int = 3) -> str:
 
     last_exception = None
     fallback_injected = False
+    fallback_llm = None
 
     for attempt in range(max_retries + 1):  # attempt 0 = first try
         try:
+            # Diagnostic: Log current model for all agents (WARNING to ensure visibility)
+            current_llm = fallback_llm if fallback_injected else None
+            for i, agent in enumerate(crew.agents):
+                model_name = getattr(agent.llm, 'model', 'unknown')
+                logger.warning(
+                    f"Attempt {attempt}: Agent {i} ({agent.role}) using model: {model_name}")
+
             return crew.kickoff(inputs)
         except Exception as e:
             last_exception = e
-            error_str = str(e).lower()
+            # Capture as much detail as possible for matching (str and repr)
+            error_str = (str(e) + " " + repr(e)).lower()
 
-            # Detect rate limit signals from NVIDIA NIM / LiteLLM
+            # Detect rate limit signals
             is_rate_limit = (
                 "429" in error_str
                 or "rate limit" in error_str
                 or "too many requests" in error_str
-                or "ratelimiterror" in error_str.replace(" ", "")
             )
 
-            if is_rate_limit and attempt < max_retries:
+            # Detect other absolute provider failures (EOL, Service Down, Capability mismatch, etc.)
+            is_provider_failure = (
+                "410" in error_str
+                or "gone" in error_str
+                or "404" in error_str
+                or "not found" in error_str
+                or "502" in error_str
+                or "503" in error_str
+                or "bad gateway" in error_str
+                or "service unavailable" in error_str
+                or "system role" in error_str
+                or "not supported" in error_str
+                or "badrequest" in error_str
+                or "400" in error_str
+            )
+
+            logger.warning(f"--- Fallback Diagnostic (Attempt {attempt}) ---")
+            logger.warning(f"is_rate_limit: {is_rate_limit}")
+            logger.warning(f"is_provider_failure: {is_provider_failure}")
+            logger.warning(f"Raw Error Snippet: {error_str[:200]}")
+
+            if (is_rate_limit or is_provider_failure) and attempt < max_retries:
                 wait_seconds = 2 ** attempt  # 0→1s, 1→2s, 2→4s, 3→8s
 
-                # On attempt 2+, switch all agents to the Gemini fallback LLM
-                if attempt >= 1 and not fallback_injected:
+                # On provider failure (410, etc.) OR attempt 2+ for rate limits,
+                # switch all agents to the Gemini fallback LLM immediately.
+                if (is_provider_failure or attempt >= 1) and not fallback_injected:
                     fallback_llm = get_fallback_llm()
                     if fallback_llm is not None:
+                        logger.warning(
+                            f"Fallback SUCCESS: Switching to {getattr(fallback_llm, 'model', 'unknown')}")
                         for agent in crew.agents:
                             agent.llm = fallback_llm
                         fallback_injected = True
                         logger.warning(
-                            f"Rate limit exhausted on primary provider after {attempt + 1} attempts. "
-                            f"Switching all agents to Gemini fallback LLM."
-                        )
+                            f"Switching all agents to Gemini fallback LLM due to: {error_str}")
                     else:
                         logger.error(
-                            "No fallback LLM configured. Set GEMINI_API_KEY in environment.")
+                            "Fallback FAILURE: get_fallback_llm() returned None. Check API keys!")
 
-                else:
+                if not is_provider_failure:
                     logger.warning(
                         f"NVIDIA NIM rate limit hit (attempt {attempt + 1}/{max_retries + 1}). "
-                        f"Retrying same provider in {wait_seconds}s."
+                        f"Retrying in {wait_seconds}s."
                     )
 
                 _time.sleep(wait_seconds)
             else:
-                # Non-rate-limit error OR all retries exhausted — propagate
+                # Non-recoverable error OR all retries exhausted — propagate
                 raise
 
     raise last_exception  # Safety fallback
@@ -490,15 +545,16 @@ def _run_crew_in_background(session_id: str, user_message: str, user_id: str, me
         # SECURITY & TEMPLATE SHORT-CIRCUIT
         # =========================================================
         from .templates import get_short_circuit_response
-        
+
         # 1. Sanitize & Check Length
         user_message = sanitize_message(user_message)
-        
+
         # 2. Check for Prompt Injection / Suspicious patterns
         if contains_suspicious_content(user_message):
-            logger.warning(f"Suspicious content detected from user {user_id}: {user_message}")
+            logger.warning(
+                f"Suspicious content detected from user {user_id}: {user_message}")
             crew_output = (
-                "¡Hola! Soy Laura. Mi sistema de seguridad ha detectado patrones inusuales en tu mensaje. "
+                "Mi sistema de seguridad ha detectado patrones inusuales en tu mensaje. "
                 "Por favor, asegúrate de realizar consultas relacionadas con la búsqueda de alojamientos en Mequedo."
             )
         else:
@@ -507,13 +563,23 @@ def _run_crew_in_background(session_id: str, user_message: str, user_id: str, me
 
         # If it wasn't a template or blocked, hit the CrewAI orchestrator
         if not crew_output:
-            crew = MequedoCrew()
-            crew_output = _kickoff_with_retry(crew, {
-                "user_id": user_id,
-                "user_message": user_message,
-                "session_id": session_id,
-                "conversation_history": history_context
-            })
+            from chatbot.crew.intent_router import classify_intent_with_retry
+            intent = classify_intent_with_retry(user_message)
+
+            if intent.intent_type == "OUT_OF_SCOPE":
+                crew_output = "Entiendo, pero como Karen, mi pasión y única especialidad es ayudarte a encontrar los mejores alojamientos en Mequedo y gestionar tus reservaciones. ¿Hay alguna ciudad en Venezuela que te gustaría visitar pronto o necesitas ayuda con tu último viaje?"
+            else:
+                crew = MequedoCrew(intent_type=intent.intent_type)
+
+                # Enrich user_message with the parsed parameters for the Specialist agent
+                enriched_message = f"{user_message}\n\n[ROUTED SYSTEM DATA: {intent.model_dump_json()}]"
+
+                crew_output = _kickoff_with_retry(crew, {
+                    "user_id": user_id,
+                    "user_message": enriched_message,
+                    "session_id": session_id,
+                    "conversation_history": history_context
+                })
 
         final_response = str(crew_output) if crew_output != "HUMAN_PAUSED" else (
             "Tu solicitud ha sido pausada para revisión manual por nuestro equipo."
@@ -584,7 +650,7 @@ def _run_crew_in_background(session_id: str, user_message: str, user_id: str, me
                 user_facing_error = (
                     "⏳ El servicio está muy ocupado en este momento. Por favor, intenta de nuevo en unos segundos."
                     if is_rate_limit
-                    else "El asistente encontró un problema. Por favor intenta de nuevo."
+                    else "El asistente encontró un problema. Por favor intenta de nuevo más tarde."
                 )
                 query = {"_id": message_id} if message_id else {
                     "session_id": session_id}
@@ -629,12 +695,13 @@ class ChatbotAsyncView(APIView):
             return Response({"error": "El mensaje es requerido."}, status=status.HTTP_400_BAD_REQUEST)
         if len(user_message) > MAX_MESSAGE_LENGTH:
             return Response({"error": f"Mensaje demasiado largo (máximo {MAX_MESSAGE_LENGTH} caracteres)."}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Pre-check for suspicious content or templates to avoid unnecessary processing
         if contains_suspicious_content(user_message):
-            logger.warning(f"⚠️ Prompt injection attempt from user_id={user_id}")
+            logger.warning(
+                f"⚠️ Prompt injection attempt from user_id={user_id}")
             return Response({
-                "response": "¡Hola! Soy Laura. Mi sistema de seguridad ha detectado patrones inusuales en tu mensaje. Por favor, asegúrate de realizar consultas relacionadas con la búsqueda de alojamientos en Mequedo.",
+                "response": "Mi sistema de seguridad ha detectado patrones inusuales en tu mensaje. Por favor, asegúrate de realizar consultas relacionadas con la búsqueda de alojamientos en Mequedo.",
                 "status": "blocked"
             }, status=status.HTTP_400_BAD_REQUEST)
 
@@ -643,10 +710,22 @@ class ChatbotAsyncView(APIView):
         # ============ INSTANT TEMPLATE CHECK ============
         # Check for fast-path responses (Greetings, Menu, FAQ, Gibberish, etc.)
         # to return them immediately and save server resources.
-        from .templates import get_short_circuit_response
-        template_response = get_short_circuit_response(sanitized_message, user_id)
+        from .templates import get_short_circuit_response, get_default_guest_fallback
+        template_response = get_short_circuit_response(
+            sanitized_message, user_id)
+
+        # GUEST FIREWALL: If query didn't hit a specific template and user is anonymous,
+        # we enforce the default conversion message instead of launching expensive CrewAI.
+        if not template_response and user_id == "WEB_ANONYMOUS":
+            logger.info(
+                f"🛡️ Guest Firewall blocked CrewAI for: '{sanitized_message}'")
+            template_response = get_default_guest_fallback(user_id)
+
         if template_response:
-            session_id = request.data.get("session_id") or str(uuid.uuid4())
+            session_id = request.data.get("session_id") or request.data.get("sessionId")
+            if not session_id and request.query_params:
+                session_id = request.query_params.get("session_id") or request.query_params.get("sessionId")
+            session_id = session_id or str(uuid.uuid4())
             try:
                 from chatbot.crew.tools.search_accommodation import get_db
                 db = get_db()
@@ -673,7 +752,10 @@ class ChatbotAsyncView(APIView):
         # ============ SESSION HANDLING ============
         # If the frontend provides a session_id, we reuse it.
         # Otherwise, we generate a new one for a fresh conversation.
-        session_id = request.data.get("session_id")
+        session_id = request.data.get("session_id") or request.data.get("sessionId")
+        if not session_id and request.query_params:
+            session_id = request.query_params.get("session_id") or request.query_params.get("sessionId")
+            
         if not session_id or not isinstance(session_id, str):
             session_id = str(uuid.uuid4())
 
@@ -773,7 +855,8 @@ class HealthCheckView(APIView):
             status_info["mongodb"] = "connected"
 
         # Verificar LLM
-        if llm is not None:
+        from .crew.llm_config import get_fast_llm
+        if get_fast_llm() is not None:
             status_info["llm"] = "initialized"
 
         # Si algo falla, devolver 503

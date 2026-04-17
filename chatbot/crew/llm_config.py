@@ -1,142 +1,82 @@
 import os
-from dotenv import load_dotenv
 import logging
+from dotenv import load_dotenv
 from crewai import LLM
+from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Check available providers based on env
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# LLM Provider Priority Order (per tier):
-#
-#  Fast (8B-class):     OpenAI gpt-4o-mini → Gemini Flash → NVIDIA 8B
-#  Deep (70B-class):    OpenAI gpt-4o      → Gemini Pro  → NVIDIA 70B
-#
-# Gemini is the GCP-backed fallback when NVIDIA NIM rate limits (40 RPM)
-# are exhausted. Set GEMINI_API_KEY in your .env / Railway env vars.
-# ============================================================
+# --- Configuración Centralizada (Pinned Versions) ---
+# Forzamos 1.5 para evitar el 'limit: 0' de la 3.1 en Free Tier
+MODELS = {
+    "fast": {
+        "openai": os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini"),
+        "nvidia": os.getenv("NVIDIA_FAST_MODEL", "meta/llama-3.1-70b-instruct"),
+        "gemini": os.getenv("GEMINI_FAST_MODEL", "gemini-1.5-flash")
+    },
+    "deep": {
+        "openai": os.getenv("OPENAI_DEEP_MODEL", "gpt-4o"),
+        "nvidia": os.getenv("NVIDIA_DEEP_MODEL", "deepseek-ai/deepseek-v3.2"),
+        "gemini": os.getenv("GEMINI_DEEP_MODEL", "gemini-1.5-pro")
+    }
+}
 
 
-def _ensure_nvidia_env() -> None:
-    """LiteLLM expects NVIDIA_NIM_API_KEY — sync it from NVIDIA_API_KEY if needed."""
+def _ensure_env():
+    """Sincroniza claves y verifica entorno."""
     if os.getenv("NVIDIA_API_KEY") and not os.getenv("NVIDIA_NIM_API_KEY"):
         os.environ["NVIDIA_NIM_API_KEY"] = os.getenv("NVIDIA_API_KEY")
 
 
-def get_fast_llm() -> LLM | None:
-    """
-    Returns a fast reasoning LLM for simple tasks (intent extraction, routing).
+def get_llm(tier='fast'):
+    _ensure_env()
 
-    Priority:
-        1. OpenAI gpt-4o-mini        (if OPENAI_API_KEY set)
-        2. NVIDIA NIM Llama 3 8B     (if NVIDIA_API_KEY set)  ← Primary
-        3. Google Gemini 1.5 Flash   (if GEMINI_API_KEY set)  ← Fallback
-    """
-    _ensure_nvidia_env()
+    config = {
+        'temp': 0.2 if tier == 'fast' else 0.4,
+        'tokens': 300 if tier == 'fast' else 800,
+        'timeout': 25 if tier == 'fast' else 45
+    }
 
-    if os.getenv("OPENAI_API_KEY"):
-        logger.debug("Fast LLM: using OpenAI gpt-4o-mini")
-        return LLM(
-            model="gpt-4o-mini",
-            temperature=0.2,
-            max_tokens=500,
-            timeout=25
-        )
-
+    # 1. Prioridad: NVIDIA (Free, fast)
     if os.getenv("NVIDIA_API_KEY"):
-        logger.debug("Fast LLM: using NVIDIA NIM Llama 3 8B")
+        model_name = MODELS[tier]["nvidia"]
+        logger.debug(f"LLM {tier.upper()}: Using NVIDIA NIM {model_name}")
         return LLM(
-            model="nvidia_nim/meta/llama3-8b-instruct",
+            model=f"nvidia_nim/{model_name}",
             api_key=os.getenv("NVIDIA_API_KEY"),
-            temperature=0.2,
-            max_tokens=500,
-            timeout=25
+            temperature=config['temp'],
+            max_tokens=config['tokens'],
+            timeout=config['timeout']
         )
 
+    # 2. Prioridad: Gemini (Free tier, moderate RPM)
     if os.getenv("GEMINI_API_KEY"):
-        logger.debug("Fast LLM: using Google Gemini Flash Latest")
+        target_model = "gemini-1.5-flash-latest" if tier == 'fast' else "gemini-1.5-pro-latest"
+        logger.warning(
+            f"LLM {tier.upper()}: Falling back to native Gemini {target_model}")
         return LLM(
-            model="gemini/gemini-flash-latest",
+            model=f"gemini/{target_model}",
             api_key=os.getenv("GEMINI_API_KEY"),
-            temperature=0.2,
-            max_tokens=500,
-            timeout=25
+            temperature=config['temp'],
+            max_tokens=config['tokens'],
+            timeout=config['timeout']
         )
 
-    logger.error("No valid API key found for Fast LLM. Set GEMINI_API_KEY, OPENAI_API_KEY, or NVIDIA_API_KEY.")
-    return None
-
-
-def get_deep_llm() -> LLM | None:
-    """
-    Returns a deep reasoning LLM for complex tasks (Laura's responses, QA, CRM).
-
-    Priority:
-        1. OpenAI gpt-4o             (if OPENAI_API_KEY set)
-        2. NVIDIA NIM Llama 3 70B    (if NVIDIA_API_KEY set)  ← Primary High-Performance
-        3. Google Gemini 1.5 Pro     (if GEMINI_API_KEY set)  ← Robust Fallback
-    """
-    _ensure_nvidia_env()
-
+    # 3. Prioridad: OpenAI (Paid, highest quality)
     if os.getenv("OPENAI_API_KEY"):
-        logger.debug("Deep LLM: using OpenAI gpt-4o")
-        return LLM(
-            model="gpt-4o",
-            temperature=0.4,
-            max_tokens=1000,
-            timeout=45
-        )
+        model_name = MODELS[tier]["openai"]
+        logger.debug(f"LLM {tier.upper()}: Using OpenAI {model_name}")
+        return LLM(model=model_name, temperature=config['temp'], max_tokens=config['tokens'], timeout=config['timeout'])
 
-    if os.getenv("NVIDIA_API_KEY"):
-        logger.debug("Deep LLM: using NVIDIA NIM Llama 3 70B")
-        return LLM(
-            model="nvidia_nim/meta/llama3-70b-instruct",
-            api_key=os.getenv("NVIDIA_API_KEY"),
-            temperature=0.4,
-            max_tokens=1000,
-            timeout=45
-        )
-
-    if os.getenv("GEMINI_API_KEY"):
-        logger.debug("Deep LLM: using Google Gemini Pro Latest")
-        return LLM(
-            model="gemini/gemini-pro-latest",
-            api_key=os.getenv("GEMINI_API_KEY"),
-            temperature=0.4,
-            max_tokens=1000,
-            timeout=45
-        )
-
-    logger.error("No valid API key found for Deep LLM. Set GEMINI_API_KEY, OPENAI_API_KEY, or NVIDIA_API_KEY.")
+    logger.error(f"No API keys found for tier {tier}")
     return None
 
 
-def get_fallback_llm() -> LLM | None:
-    """
-    Returns the best available fallback LLM when the primary provider fails.
+# Aliases para mantener compatibilidad con tu código actual
 
-    Used by _kickoff_with_retry in views.py when NVIDIA NIM returns 429.
-    Prefers Gemini (GCP-billed, high rate limits) over NVIDIA.
-    """
-    if os.getenv("GEMINI_API_KEY"):
-        logger.info("Fallback LLM: switching to Google Gemini Flash Latest due to provider failure.")
-        return LLM(
-            model="gemini/gemini-flash-latest",
-            api_key=os.getenv("GEMINI_API_KEY"),
-            temperature=0.3,
-            max_tokens=800,
-            timeout=30
-        )
 
-    if os.getenv("OPENAI_API_KEY"):
-        logger.info("Fallback LLM: switching to OpenAI gpt-4o-mini due to provider failure.")
-        return LLM(
-            model="gpt-4o-mini",
-            temperature=0.3,
-            max_tokens=800,
-            timeout=30
-        )
-
-    logger.error("No fallback LLM available. Set GEMINI_API_KEY or OPENAI_API_KEY.")
-    return None
+def get_fast_llm(): return get_llm(tier='fast')
+def get_deep_llm(): return get_llm(tier='deep')
+# Flash es el fallback por excelencia
+def get_fallback_llm(): return get_llm(tier='fast')

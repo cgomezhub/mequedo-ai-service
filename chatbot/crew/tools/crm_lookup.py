@@ -13,15 +13,15 @@ class UserContextArgs(BaseModel):
 
 class UserContextTool(BaseTool):
     """
-    CRM Lookup Tool for Laura.
+    CRM Lookup Tool for Karen.
     Fetches the authenticated user's profile and active reservations from MongoDB
     so Laura can personalize her responses naturally.
     """
     name: str = "User Context Lookup"
     description: str = (
-        "Look up a logged-in Mequedo user's profile and active reservations by their userId. "
-        "Use this tool when the user seems to be asking about their bookings, trips, payments, or account. "
-        "Do NOT use this tool if the userId is 'WEB_ANONYMOUS' or 'WEB_FRONTEND'."
+        "Look up a logged-in Mequedo user's profile and active reservations (LAST 3) by their userId. "
+        "Use this tool exclusively for questions about bookings, check-in dates, status, or ID verification. "
+        "Do NOT use this tool for managing properties, ads, or messages; redirect those to the dashboard."
     )
     args_schema: Type[BaseModel] = UserContextArgs
 
@@ -86,24 +86,26 @@ class UserContextTool(BaseTool):
             # Format reservation context cleanly for the LLM
             # NOTE: We inform Laura about the limit so she can relay it to the user.
             context = f"User: {user_name}\nID Verification Status: {verification_text}\n"
-            context += "CRITICAL NOTE: You (Laura) can only see the LAST 3 reservations for security and brevity. If the user has more, inform them they can see the full list in their dashboard.\n"
+            context += "CRITICAL NOTE: You (Karen) can only see the LAST 3 reservations for security and brevity. If the user has more, inform them they can see the full list in their dashboard.\n"
             context += "Active Reservations:\n"
             for r in reservations:
                 start = str(r.get("startDate", "N/A")).split(" ")[0]
                 end = str(r.get("endDate", "N/A")).split(" ")[0]
                 total = r.get("totalPrice", "N/A")
                 status = r.get("status", "Pending")
-                
+
                 listing_id = r.get("listingId")
                 property_name = "Desconocida"
                 location_val = ""
-                
+
                 if listing_id:
                     l_query_ids = [listing_id]
                     if isinstance(listing_id, str) and len(listing_id) == 24:
-                        try: l_query_ids.append(ObjectId(listing_id))
-                        except Exception: pass
-                    
+                        try:
+                            l_query_ids.append(ObjectId(listing_id))
+                        except Exception:
+                            pass
+
                     listing = listings_col.find_one(
                         {"_id": {"$in": l_query_ids}},
                         {"title": 1, "locationValue": 1}
@@ -113,11 +115,11 @@ class UserContextTool(BaseTool):
                             {"id": {"$in": l_query_ids}},
                             {"title": 1, "locationValue": 1}
                         )
-                    
+
                     if listing:
                         property_name = listing.get("title", property_name)
                         location_val = listing.get("locationValue", "")
-                        
+
                 context += f"  - Alojamiento: {property_name} ({location_val}) | Status: {status} | Check-in: {start} → Check-out: {end} | Total: ${total}\n"
 
             return context

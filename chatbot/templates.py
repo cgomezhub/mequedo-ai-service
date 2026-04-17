@@ -1,4 +1,6 @@
+from __future__ import annotations
 import logging
+import os
 import unicodedata
 
 logger = logging.getLogger(__name__)
@@ -9,7 +11,9 @@ def get_short_circuit_response(user_message: str, user_id: str = "WEB_ANONYMOUS"
     Checks if the user message matches any predefined "Fast response" templates.
     Returns the response string if a match is found, otherwise None.
     """
+    BASE_URL = os.getenv("MEQUEDO_BASE_URL", "https://mequedo.app").rstrip("/")
     normalized_msg = user_message.strip().lower()
+    is_wa = user_id.startswith("wa_")
 
     # Strip common punctuation and accents BEFORE checking for gibberish/matching
     clean_msg = normalized_msg.replace("¿", "").replace(
@@ -22,32 +26,30 @@ def get_short_circuit_response(user_message: str, user_id: str = "WEB_ANONYMOUS"
     if _is_nonsense_or_spam(clean_msg):
         logger.info(f"🚫 Gibberish/Spam detected: '{clean_msg}'")
         return (
-            "¡Hola! Soy Karen. No he podido comprender tu mensaje, ya que parece contener caracteres aleatorios o repetidos.\n\n"
+            "No he podido comprender tu mensaje, ya que parece contener caracteres aleatorios o repetidos.\n\n"
             "Mequedo es una plataforma profesional para la renta de alojamientos. Por favor, escribe una pregunta clara "
-            "en español o utiliza nuestro [Menú de Ayuda](action:menu) para guiarte."
+            "en español o utiliza el [Menú de Ayuda](action:menu) para guiarte."
         )
 
     crm_keywords = ["mis reservaciones", "mis reservas", "mis alojamientos",
-                    "mis listados", "mis propiedades", "mis compras", "mis viajes", "mi cuenta", "mis arriendos", "mis publicaciones"]
+                    "mis listados", "mis propiedades", "mis compras", "mis viajes", "mi cuenta", "mis arriendos", "mis publicaciones", "mis mensajes", "mis notificaciones"]
 
     # Case 1: Anonymous user trying to access private data
     if (user_id in ["WEB_ANONYMOUS", "ANONYMOUS"] or user_id.startswith("wa_")) and any(keyword in clean_msg for keyword in crm_keywords):
         # Note: For WhatsApp, we might need a different check for auth, but the keyword trigger is enough to prompt login
         return (
-            "¡Hola! Veo que deseas consultar información personal sobre tus propiedades o reservaciones. "
-            "Para proteger tu privacidad y poder acceder a estos datos, necesitas iniciar sesión en la plataforma Mequedo primero.\n\n"
-            "Selecciona [Iniciar Sesión](action:START_LOGIN) o, si aún no tienes una cuenta, [Registrarme](action:START_REGISTRATION)."
+            "Si deseas consultar información personal sobre tus propiedades, reservaciones o mensajes, "
+            "para proteger tu privacidad y poder acceder a tus datos, necesitas iniciar sesión en Mequedo.\n\n"
+            "Selecciona: [Iniciar Sesión](action:START_LOGIN) o, si aún no tienes una cuenta, [Registrarme](action:START_REGISTRATION)."
         )
-
     # Case 2: Basic greetings
     if clean_msg in ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "hey", "saludos", "hola Karen"]:
         return (
-            "¡Hola! Soy Karen, la asistente virtual de Mequedo. Estoy aquí para ayudarte a encontrar el alojamiento perfecto "
-            "en Venezuela, o responder cualquier duda que tengas sobre nuestra plataforma. ¿En qué ciudad te gustaría buscar hospedaje?"
+            "¡Hola! Soy Karen, tu asistente en Mequedo. ¿En qué ciudad buscas hospedaje hoy?"
         )
 
     # Case 3: Platform Help / Menu
-    if clean_msg in ["que hace esta plataforma", "para que es esta plataforma", "que ofrecen", "que es mequedo", "menu", "opciones", "ayuda", "que puedes hacer"]:
+    if clean_msg in ["que hace esta plataforma", "para que es esta plataforma", "que ofrecen", "que es mequedo", "menu", "opciones", "ayuda", "que puedes hacer", "como funciona la plataforma", "como funciona mequedo", "que puedo hacer aqui", "que es esto", "para que sirve esto", "no entiendo"]:
         return (
             "Mequedo es la plataforma líder en renta y reserva de alojamientos en Venezuela, ofreciendo un entorno seguro y verificado.\n\n"
             "¡Estoy aquí para guiarte! Puedes pedirme que busque hospedajes en cualquier ciudad, o consultar estas opciones:\n\n"
@@ -58,7 +60,83 @@ def get_short_circuit_response(user_message: str, user_id: str = "WEB_ANONYMOUS"
             "[📋 Términos y Reglas](action:START_TERMS)"
         )
 
-    is_wa = user_id.startswith("wa_")
+    # Case 4: Basic goodbyes
+    if clean_msg in ["gracias", "muchas gracias", "te lo agradezco", "gracias Karen", "agradecido", "agradecida", "gracias por tu ayuda", "gracias por la ayuda", "gracias por la información"]:
+        return (
+            "¡De nada! Estoy aquí para ayudarte. ¿En qué más puedo asistirte hoy?"
+        )
+    # Case 5: Basic goodbyes
+    if clean_msg in ["adios", "hasta luego", "nos vemos", "chao", "chao Karen", "gracias, chao", "gracias, chao Karen"]:
+        return (
+            "¡Hasta luego! Que tengas un excelente día, si necesitas algo mas no dudes en escribirme"
+        )
+
+    # Case 8: Guest Search Detection - MOVED TO BOTTOM
+
+    # Case 6: How to register
+    if clean_msg in ["como me registro", "como me inscribo", "como me registro en mequedo", "como me registro en la plataforma"]:
+        return (
+            "Para registrarte en Mequedo, por favor selecciona [Registrarme](action:START_REGISTRATION)."
+        )
+    if clean_msg in ["como publico mi alojamiento", "como publico mi alojamiento en mequedo", "como publico mi alojamiento en la plataforma"]:
+        return (
+            "Para publicar tu alojamiento en Mequedo, por favor selecciona [Publicar mi alojamiento](action:START_RENT_PROCESS)."
+        )
+    if clean_msg in ["como verifico mi identidad", "como verifico mi identidad en mequedo", "como verifico mi identidad en la plataforma"]:
+        return (
+            "Para verificar tu identidad en Mequedo, por favor selecciona [Verificar Identidad](action:START_ID_VERIFICATION)."
+        )
+    if clean_msg in ["como inicio sesion", "como inicio sesion en mequedo", "como inicio sesion en la plataforma"]:
+        return (
+            "Para iniciar sesión en Mequedo, por favor selecciona [Iniciar Sesión](action:START_LOGIN)."
+        )
+    # Case 9: Dashboard Redirections (Gated for Auth)
+    if any(keyword in clean_msg for keyword in ["mis mensajes", "ver mensajes", "mensajes", "mensaje"]):
+        text = "💬 Puedes ver tus mensajes y solicitudes en Mequedo aquí:"
+        link = f"{BASE_URL}/guest/messages"
+        return f"{text}\n\n" + (f"{link}" if is_wa else f"> 🔗 [Ver Mis Mensajes]({link})")
+
+    if any(keyword in clean_msg for keyword in ["mi perfil", "mi cuenta", "configuracion", "ajustes"]):
+        text = "⚙️ Accede a tu configuración de perfil y datos personales aquí:"
+        link = f"{BASE_URL}/account-settings"
+        return f"{text}\n\n" + (f"{link}" if is_wa else f"> 🔗 [Gestionar Mi Perfil]({link})")
+
+    if any(keyword in clean_msg for keyword in ["mis favoritos", "favoritos", "guardados"]):
+        text = "❤️ Mira tus alojamientos guardados y favoritos aquí:"
+        link = f"{BASE_URL}/favorites"
+        return f"{text}\n\n" + (f"{link}" if is_wa else f"> 🔗 [Ver Mis Favoritos]({link})")
+
+    if any(keyword in clean_msg for keyword in ["solicitudes", "reservas de mis casas", "solicitudes a mis alojamientos"]):
+        text = "📅 Gestiona las solicitudes y reservas de tus huéspedes aquí:"
+        link = f"{BASE_URL}/reservations"
+        return f"{text}\n\n" + (f"{link}" if is_wa else f"> 🔗 [Gestionar Reservas]({link})")
+
+    if any(keyword in clean_msg for keyword in ["noticias", "promociones", "experiencias"]):
+        text = "🆕 Descubre las últimas novedades, noticias y experiencias en Mequedo:"
+        link = f"{BASE_URL}/experiences"
+        return f"{text}\n\n" + (f"{link}" if is_wa else f"> 🔗 [Ver Experiencias]({link})")
+
+    if any(keyword in clean_msg for keyword in ["soporte", "contacto", "ayuda humana", "atencion"]):
+        text = "💁 Nuestro equipo de soporte está listo para ayudarte directamente:"
+        link = f"{BASE_URL}/contact"
+        return f"{text}\n\n" + (f"{link}" if is_wa else f"> 🔗 [Contactar Soporte]({link})")
+
+    if any(keyword in clean_msg for keyword in ["como publico mi casa", "como publico mi alojamiento", "publicar alojamiento", "rentar mi casa"]):
+        return (
+            "Publicar tu alojamiento en Mequedo es muy sencillo y seguro. Solo sigue este enlace para completar tu registro y subir tus fotos:\n\n"
+            "[🏠 Publicar mi alojamiento](action:START_RENT_PROCESS)"
+        )
+
+    if any(keyword in clean_msg for keyword in ["propiedades", "anuncios", "publicaciones", "casas"]):
+        text = "🏠 Revisa y edita tus anuncios publicados en Mequedo aquí:"
+        link = f"{BASE_URL}/properties"
+        return f"{text}\n\n" + (f"{link}" if is_wa else f"> 🔗 [Ver Mis Anuncios]({link})")
+
+    if clean_msg in ["como veo mis reservas", "como veo mis reservas en mequedo", "como veo mis reservas en la plataforma", "mis reservas", "mis viajes"]:
+        # We leave the "How to see" link here, but the actual "data query" will fall through to Crew if not matched here
+        text = "🔗 Puedes ver tus viajes y reservas en Mequedo aquí:"
+        link = f"{BASE_URL}/trips"
+        return f"{text}\n\n" + (f"{link}" if is_wa else f"> 🔗 [Ver Mis Viajes]({link})")
 
     # Case 4: About us
     if clean_msg in ["quienes son ustedes y por que confiar en mequedo", "quienes son ustedes", "por que confiar", "start_about_us"]:
@@ -68,10 +146,11 @@ def get_short_circuit_response(user_message: str, user_id: str = "WEB_ANONYMOUS"
             "<iframe width=\"100%\" height=\"350\" src=\"https://www.youtube.com/embed/5r9x0GuHd_U\" frameborder=\"0\" allow=\"accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture\" allowfullscreen style=\"border-radius: 12px; margin-top: 10px;\"></iframe>"
         )
         return (
-            "¡Hola! Mequedo es la plataforma líder en renta y reserva de alojamientos en Venezuela. "
+            "Mequedo es la plataforma líder en renta y reserva de alojamientos en Venezuela. "
             "Nuestro objetivo es transformar la forma de hospedarse en el país, ofreciendo un entorno seguro, profesional y verificado.\n\n"
             "Para empezar a disfrutar de nuestras opciones, [Registrarme](action:START_REGISTRATION) es el primer paso. "
-            "Si ya tienes una cuenta, pero no has verificado tu identidad, por favor selecciona [Verificar Identidad](action:START_ID_VERIFICATION) para continuar.\n\n"
+            "Si ya tienes una cuenta y deseas iniciar sesión, por favor selecciona [Iniciar Sesión](action:START_LOGIN)."
+            "Si ya tienes una cuenta, pero no has verificado tu identidad, por favor selecciona [Verificar Identidad](action:START_ID_VERIFICATION) para poder publicar y reservar, es muy fácil, rápido y seguro.\n\n"
             f"Conoce más sobre nosotros aquí:\n\n{video_element}"
         )
 
@@ -102,11 +181,6 @@ def get_short_circuit_response(user_message: str, user_id: str = "WEB_ANONYMOUS"
             if is_wa else
             "> 🔗 Puedes leer el documento legal completo aquí: [Términos y Condiciones de Mequedo](https://mequedo.app/terms-conditions)"
         )
-        # tudren_link = (
-        #     "*TuDrenViajes* (https://www.tudrenviajes.com/)" # Single asterisk for WhatsApp bold
-        #     if is_wa else
-        #     "🔗 [TuDrenViajes](https://www.tudrenviajes.com/)"
-        # )
         response_text = (
             "Para mantener nuestro Ecosistema Mequedo seguro y proteger tanto a Anfitriones como a Viajeros, aquí te presento **las 5 reglas de oro**:\n\n"
             "**1. Edades y Verificación:** \n\n"
@@ -142,7 +216,64 @@ def get_short_circuit_response(user_message: str, user_id: str = "WEB_ANONYMOUS"
             "Ellos están listos para ayudarte con tu caso específico."
         )
 
+    # Case 8: Guest Search Detection (Catch common Search patterns for Guests)
+    # Refined triggers to avoid false positives with general sentences
+    search_triggers = ["busca en", "alojamiento en", "hospedaje en", "apartamento en",
+                       "casa en", "habitacion en", "alquiler en", "renta en"]
+    if (user_id in ["WEB_ANONYMOUS", "ANONYMOUS"] or is_wa) and any(trigger in clean_msg for trigger in search_triggers):
+        logger.info(f"🚀 Guest Search Short-Circuit: '{clean_msg}'")
+        if is_wa:
+            return (
+                "¡Veo que estás buscando alojamiento! 🏠\n\n"
+                "Para poder procesar tu búsqueda con Inteligencia Artificial y mostrarte nuestras mejores opciones, "
+                "por nuestra política de seguridad necesitas estar registrado en nuestra comunidad Mequedo.\n\n"
+                "Crear tu cuenta es totalmente gratis. Te invito a registrarte y ver nuestros listados aquí:\n\n"
+                f"🔗 {BASE_URL}/\n\n"
+                "¡Estaré aquí esperándote cuando termines!"
+            )
+        return (
+            "Veo que estás buscando alojamiento.\n\n"
+            "En nuestra plataforma estamos para ayudarte a encontrar el alojamiento ideal.\n\n"
+            "Para que pueda ayudarte a encontrar la mejor opción con nuestra búsqueda personalizada por IA, **necesitas iniciar sesión o registrarte**.\n\n"
+            "Si prefieres explorar por tu cuenta, puedes usar nuestro buscador manual:\n\n"
+            "[Iniciar Sesión](action:START_LOGIN)\n"
+            "[Registrarme](action:START_REGISTRATION)\n"
+            "[Búsqueda Manual](action:OPEN_SEARCH)"
+        )
+
     return None
+
+
+def get_default_guest_fallback(user_id: str = "WEB_ANONYMOUS") -> str:
+    """
+    Standard response for unauthenticated users who ask something 
+    that doesn't match a specific template, preventing CrewAI execution.
+    """
+    is_wa = user_id.startswith("wa_")
+    BASE_URL = os.getenv("MEQUEDO_BASE_URL", "https://mequedo.app").rstrip("/")
+
+    if is_wa:
+        return (
+            "¡Bienvenido a Mequedo! 🏠\n\n"
+            "He notado que estás escribiendo desde un número no registrado o sin sesión activa.\n"
+            "Para garantizar una comunidad segura y poder ofrecerte búsquedas impulsadas por nuestra Inteligencia Artificial, "
+            "necesitas tener una cuenta verificada y tu número celular asociado.\n\n"
+            "Te invito a registrarte, iniciar sesión, o asegurarte de agregar tu número telefónico en tu perfil para continuar tu búsqueda de forma rápida y segura:\n\n"
+            f"🔗 {BASE_URL}/\n\n"
+            "Una vez iniciada tu sesión y validado tu número, serás libre de usar este chat para todas tus reservaciones. ¡Te esperamos!"
+        )
+
+    return (
+        "¡Bienvenido a Mequedo! 🏠\n\n"
+        "He notado que aún no has ingresado a tu cuenta.\n"
+        "Para garantizar una comunidad segura, las funciones de búsqueda inteligente, publicación, reserva y verificación de identidad son exclusivas para **nuestros miembros**.\n\n"
+        "¿Cómo prefieres continuar?\n\n"
+        "[Iniciar Sesión](action:START_LOGIN)\n"
+        "[Registrarme](action:START_REGISTRATION)\n"
+        "[Verificar Identidad](action:START_ID_VERIFICATION)\n"
+        "[¿Quiénes somos?](action:START_ABOUT_US)\n"
+        "[Búsqueda Manual](action:OPEN_SEARCH)"
+    )
 
 
 def _is_nonsense_or_spam(text: str) -> bool:

@@ -10,8 +10,9 @@ import certifi
 
 logger = logging.getLogger(__name__)
 
-# Global MongoClient to maintain the connection pool and avoid instantiating on every tool run
+# Global MongoClient and Cache
 _mongo_client = None
+_search_cache = {}  # Format: { (args_tuple): (result, timestamp) }
 
 
 def get_db():
@@ -54,6 +55,15 @@ class SearchAccommodationTool(BaseTool):
     args_schema: Type[BaseModel] = SearchAccommodationArgs
 
     def _run(self, city: str, max_price: Optional[int] = None, guests: Optional[int] = None, bedrooms: Optional[int] = None, bathrooms: Optional[int] = None) -> str:
+        import time
+        # 1. Check Cache (TTL 5 minutes)
+        cache_key = (city.strip().lower(), max_price, guests, bedrooms, bathrooms)
+        if cache_key in _search_cache:
+            cached_res, timestamp = _search_cache[cache_key]
+            if time.time() - timestamp < 300: # 5 minutes
+                logger.debug(f"Search cache HIT for {city}")
+                return cached_res
+
         db = get_db()
         if db is None:
             return "Error: Database connection unavailable."
@@ -74,7 +84,7 @@ class SearchAccommodationTool(BaseTool):
             matching_loc_ids = [loc["_id"] for loc in matching_locations]
 
             if not matching_loc_ids:
-                return f"No locations found matching the city '{city}'."
+                return "NO_PROPERTIES_FOUND"
 
             # Formulate the highly optimized direct query
             filters = {"isApproved": True,
@@ -101,10 +111,10 @@ class SearchAccommodationTool(BaseTool):
                     "bathrooms": 1, 
                     "description": 1
                 }
-            ).limit(6))
+            ).sort("createdAt", -1).limit(3))
 
             if not listings:
-                return f"No accommodations found in '{city}' matching criteria: max_price={max_price}."
+                return "NO_PROPERTIES_FOUND"
 
             result = f"Found {len(listings)} options in {city}. CRITICAL: Use these exact details only:\n"
             for l in listings:
@@ -123,6 +133,9 @@ class SearchAccommodationTool(BaseTool):
                     f"City: {l_city} | Slug: {l_slug} | Max Guests: {l_guests} | "
                     f"Beds: {l_beds} | Baths: {l_baths} | Desc: {l_desc}...\n"
                 )
+            # 2. Update Cache
+            import time
+            _search_cache[cache_key] = (result, time.time())
             return result
         except Exception as e:
             logger.error(
