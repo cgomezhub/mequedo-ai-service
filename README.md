@@ -1,45 +1,72 @@
-# Django Rest Framework Project
+# Mequedo AI Service (Django)
 
-## GOAL
-This project is used to make API for a AI Chatbot to search and make suggestions using LnagChain and MongoDB
+This project is a Django-based AI service for **Mequedo**, an accommodation platform in Venezuela. It provides a chatbot (Karen) for searching listings and integrates with WhatsApp for notifications and interactions.
 
-## SPTEPS
-1. Seting the project:
-    - set virtual enviroment: ```python3 -m venv venv```  venv at the end is the folder name (if use .env it will be hidden)
-    - got to venv: ```source venv/bin/activate``` now you are in virtual envieroment
-        - Check the dependencies: ```pip list ```
-        - intall: ```pip install django djangorestframework pymongo langchain openai python-dotenv ```
-    - create and  name the general project: ```django-admin startproject mequedo_ai .``` // the point(.) at the end isß neccesary to create the folder inside the general project.
-    - creates the apps for the project: ej ```python3 manage.py startapp chatbot``` and apply migtations: ej: ```python3 manage.py migrate``` then, it does all migrations for dafaul.  a db.sqlite that can be changed to postgeSQL or mongoDB
-    - in setting of the project, register the apps created before: ej: ```chatbot``` and ``` rest-framework``.
-    - inside chatbot, create urls.py with a list urlpatterns= []
-    -inside mequedo_ai register the ```route: path("api/", ("chatbot.urls"))```
-    - watch the server with ```python3 manage.py runserver ```
+## Tech Stack
+- **Framework:** Django with Django Rest Framework (DRF)
+- **AI Orchestration:** CrewAI (Multi-Agent System)
+- **Database:** MongoDB (Listings, Locations, Scheduled Tasks)
+- **LLMs:** OpenAI and NVIDIA AI Endpoints (Llama 3)
+- **Integrations:** WhatsApp Cloud API
 
-2. API views:
-    - create  APIview in chatbot/views.py,could be  a Post method ChatbotView.
-    - create a path (ej. path('query/', ChatbotView.as_view())). in chatbot/urls.py
-3. Test views:
-    - in your browser go to http://127.0.0.1:8000/api/query/ and create the request, filling the body with the JSON for the message.
-    - you can also test the API from Postman filling the body with the JSON for the message.
-==================================== commit
+---
 
-## General Steps:
+## Getting Started
 
-1. Create a new Django project.
-2. set  Django Rest Framework.
-3. Create  a basic  endpointusing  DRF.
-4. Conect your route API  API from Next.js.
-5. Integrate  LangChain y MongoDB:
+### 1. Environment Setup
+- **Create virtual environment:**
+  ```bash
+  python3 -m venv venv
+  ```
+- **Activate virtual environment:**
+  ```bash
+  source venv/bin/activate
+  ```
+- **Install dependencies:**
+  ```bash
+  pip install -r requirements.txt
+  ```
 
+### 2. Configuration (.env)
+Copy `.env.template` to `.env` and fill in the required variables:
+- `DATABASE_URL`: MongoDB connection string.
+- `MONGODB_DB_NAME`: MongoDB database name.
+- `MEQUEDO_SECRET_TOKEN`: Shared secret for Next.js callbacks.
+- `NVIDIA_API_KEY`: API key for LLM agents.
+- `WHATSAPP_ACCESS_TOKEN`: Meta WhatsApp API token.
 
+### 3. Running the API (Web Process)
+To start the main API server for the chatbot and WhatsApp webhooks:
+```bash
+python manage.py runserver
+```
 
+---
 
-    
+## Reservation Scheduler (Worker)
 
+The project includes a background worker responsible for handling reservation expirations. It polls MongoDB for tasks that are due and notifies the Next.js frontend to release the properties.
 
+### How it works:
+1. **Polling:** The worker checks the `ScheduledTask` collection in MongoDB every 60 seconds.
+2. **Identification:** It looks for tasks with `status: "pending"` where `executeAt <= now`.
+3. **Callback:** For each due task, it sends a POST request to the `callbackUrl` (Next.js endpoint) with the `reservationId` and `MEQUEDO_SECRET_TOKEN`.
+4. **Completion:** It updates the task status in MongoDB based on the response.
 
+### Running the Worker in Development:
+Open a **separate terminal**, activate your venv, and run:
+```bash
+python manage.py run_reservation_scheduler
+```
 
+### Running in Production:
+In production (e.g., Railway/Heroku), the worker is managed by the `Procfile`:
+```yaml
+worker: python manage.py run_reservation_scheduler
+```
 
+---
 
-
+## Testing
+- **Chatbot API:** POST to `http://127.0.0.1:8000/api/chatbot/` with a JSON body: `{"message": "Busco casa en Lechería"}`.
+- **WhatsApp Webhook:** Use the `test_whatsapp_webhook.sh` script to simulate incoming messages.

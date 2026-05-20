@@ -64,8 +64,15 @@ class Command(BaseCommand):
 
                         logger.info(
                             f"Sending callback to {callback_url} with secret ending in ...{secret_token[-3:]}")
+                        
+                        headers = {
+                            "User-Agent": "MequedoWorker/1.0",
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        }
+                        
                         response = requests.post(
-                            callback_url, json=payload, timeout=10)
+                            callback_url, json=payload, headers=headers, timeout=10)
 
                         if response.status_code in [200, 404, 400]:
                             # 200 = OK, 404 = Res not found (maybe deleted), 400 = invalid
