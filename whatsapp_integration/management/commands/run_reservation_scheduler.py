@@ -5,8 +5,12 @@ import requests
 import logging
 import certifi
 from datetime import datetime
+from dotenv import load_dotenv
 from django.core.management.base import BaseCommand
 from pymongo import MongoClient
+
+# Load environment variables explicitly for the management command
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +22,26 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             'Starting Reservation Scheduler...'))
 
+        db_url = os.getenv("DATABASE_URL")
+        # Mask password in URL for security
+        masked_url = "None"
+        if db_url:
+            masked_url = db_url
+            if "@" in db_url:
+                try:
+                    prefix, rest = db_url.split("@", 1)
+                    scheme, credentials = prefix.split("://", 1)
+                    if ":" in credentials:
+                        username, password = credentials.split(":", 1)
+                        masked_url = f"{scheme}://{username}:******@{rest}"
+                except Exception:
+                    masked_url = "[Invalid/Unmaskable URL Format]"
+
+        self.stdout.write(f"Connecting to MongoDB with URL: {masked_url}")
+
         # Connect to MongoDB
         try:
-            client = MongoClient(os.getenv("DATABASE_URL"),
+            client = MongoClient(db_url,
                                  tlsCAFile=certifi.where())
             db = client.get_database(os.getenv("MONGODB_DB_NAME", "test"))
             tasks_collection = db.get_collection("ScheduledTask")
