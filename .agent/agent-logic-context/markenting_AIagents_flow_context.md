@@ -1,9 +1,9 @@
 # Marketing AI Agents — Flow & Logic Context
 
-> **Purpose of this file:** Capture the *why* behind the `marketing` app's AI logic — the
+> **Purpose of this file:** Capture the _why_ behind the `marketing` app's AI logic — the
 > end-to-end flow, the LLM strategy, the anti-hallucination guards, and the hard-won
 > decisions/gotchas from the build session. This is context for future agents/devs so the
-> reasoning isn't re-derived from scratch. The step-by-step *build plan* lives in
+> reasoning isn't re-derived from scratch. The step-by-step _build plan_ lives in
 > `.agent/workflows/backend-marketing-workflow.md`; this file documents what was actually
 > implemented and the lessons learned.
 
@@ -13,8 +13,8 @@
 
 Turns a single Mequedo `TourismPackage` (or `Listing`) into a **human-reviewable, multi-channel
 marketing draft**: Instagram caption + hashtags, YouTube title + description, an in-app
-announcement (HTML), an image-overlay text, and a branded image composed from the package's
-real Cloudinary photos.
+announcement (plain text — see §7), an image-overlay text, and a branded image composed from the
+package's real Cloudinary photos.
 
 **Phase 1 (current) = generate → reviewable `draft`.** No auto-posting; a human posts from the
 Next.js admin. Publishing to Instagram/YouTube is deferred to Phase 2 (gated behind Meta App
@@ -57,17 +57,18 @@ request on the LLM (Vercel ~30s gateway timeout).
 
 Two agents, two chained tasks, sequential — shaped like `MequedoCrew`.
 
-| Component | File | Notes |
-|---|---|---|
-| `MarketingCrew` | `marketing_orchestrator.py` | builds agents+tasks; `setup_crew()` → `memory=False, cache=True`; `kickoff()` returns the final task's `json_dict` serialized |
-| Copywriter ("Karen Marketing") | `marketing_agents.py:get_copywriter_agent` | `tools=[MarketingSourceTool()]`, `allow_delegation=False`, `max_iter=3`, `max_execution_time=90` |
-| Brand/QA Editor | `marketing_agents.py:get_brand_qa_agent` | no tools; hallucination + brand-voice checker |
-| Generate task | `marketing_tasks.py:get_generate_content_task` | Step 1 call source tool, Step 2 draft all fields in Venezuelan Spanish |
-| QA task | `marketing_tasks.py:get_qa_marketing_task` | `context=[generate_task]`, `output_json=MarketingContentSchema` → forces clean JSON |
-| Output schema | `marketing_schemas.py:MarketingContentSchema` | 7 fields: `instagram_caption, hashtags, youtube_title, youtube_description, announcement_html, image_overlay_text, chosen_image_url` |
-| Source tool | `crew/tools/marketing_source_tool.py:MarketingSourceTool` | reads `TourismPackage`/`Listing` via shared `get_db()`; the crew's ONLY source of truth |
+| Component                      | File                                                      | Notes                                                                                                                                |
+| ------------------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `MarketingCrew`                | `marketing_orchestrator.py`                               | builds agents+tasks; `setup_crew()` → `memory=False, cache=True`; `kickoff()` returns the final task's `json_dict` serialized        |
+| Copywriter ("Karen Marketing") | `marketing_agents.py:get_copywriter_agent`                | `tools=[MarketingSourceTool()]`, `allow_delegation=False`, `max_iter=3`, `max_execution_time=MARKETING_TASK_TIMEOUT` (default 180s)  |
+| Brand/QA Editor                | `marketing_agents.py:get_brand_qa_agent`                  | no tools; hallucination + brand-voice checker                                                                                        |
+| Generate task                  | `marketing_tasks.py:get_generate_content_task`            | Step 1 call source tool, Step 2 draft all fields in Venezuelan Spanish                                                               |
+| QA task                        | `marketing_tasks.py:get_qa_marketing_task`                | `context=[generate_task]`, `output_json=MarketingContentSchema` → forces clean JSON                                                  |
+| Output schema                  | `marketing_schemas.py:MarketingContentSchema`             | 7 fields: `instagram_caption, hashtags, youtube_title, youtube_description, announcement_html (plain text — see §7), image_overlay_text, chosen_image_url` |
+| Source tool                    | `crew/tools/marketing_source_tool.py:MarketingSourceTool` | reads `TourismPackage`/`Listing` via shared `get_db()`; the crew's ONLY source of truth                                              |
 
 **`MarketingSourceTool`** has two entry points:
+
 - `_run(source_type, source_id)` → the formatted "FACTUAL SOURCE RECORD" text the agent reads.
 - `fetch_facts(source_type, source_id)` → the raw dict, used by the background worker for the
   deterministic overlay + the junk guard (so we don't trust the LLM for the price on the image).
@@ -77,13 +78,18 @@ Two agents, two chained tasks, sequential — shaped like `MequedoCrew`.
 ## 4. LLM strategy — NVIDIA NIM only (this is the single most important decision)
 
 Defined in `chatbot/crew/llm_config.py`:
+
 - `get_marketing_llm()` → primary, `MARKETING_MODEL` (default `meta/llama-3.3-70b-instruct`)
 - `get_marketing_fallback_llm()` → `MARKETING_FALLBACK_MODEL` (default `meta/llama-3.1-70b-instruct`)
 - `_build_marketing_llm(model)` → `nvidia_nim/<model>`, `temperature=MARKETING_TEMPERATURE` (0.2)
 - `_kickoff_marketing_with_retry` (`marketing/views.py`) → primary → fallback NVIDIA model on
-  rate-limit/provider failure, with exponential backoff; logs each agent's active model.
+  rate-limit/provider failure **or task timeout**, with exponential backoff; logs each agent's
+  active model. Per-agent budget is `MARKETING_TASK_TIMEOUT` (default 180s); the crew runs in a
+  background thread so it is NOT bound by the ~30s Vercel gateway timeout — 90s was too tight for a
+  70B pass under load.
 
 ### Why NOT Anthropic / OpenAI / Gemini
+
 **Anthropic geo-blocks Venezuela.** The marketing crew was originally specced on Claude Opus 4.8.
 Calls from a Venezuelan IP return `403 {'error': {'type': 'forbidden', 'message': 'Request not
 allowed'}}`. The app server runs on a VE IP (it can't sit behind a US VPN because MongoDB Atlas
@@ -94,7 +100,7 @@ the marketing crew was switched to NVIDIA NIM. (See §6 for the geo-block diagno
 
 ## 5. Anti-hallucination grounding system
 
-**The problem we hit:** for the "Barbacoas" package, the source tool returned *perfect* facts
+**The problem we hit:** for the "Barbacoas" package, the source tool returned _perfect_ facts
 (`Barbacoas / $40 / 2 días / real inclusions`), but the model still invented a **beach** and a
 **wrong price**. Root causes: `temperature=0.7` (creative) + a **gibberish description** in the DB
 (`"wjdjwjdj dwqd…"`) which the model "filled in" with tourism clichés; the QA agent (same model,
@@ -106,13 +112,14 @@ same temp) rubber-stamped it.
    fact-drift. Tone/warmth comes from the prompt, not temperature.
 2. **Hardened prompts** (`marketing_agents.py` + `marketing_tasks.py`): forbid inventing
    geography/activities (playa, mar, montaña, río…), forbid changing the price, and — critically —
-   "if the description is empty/noise, write a *generic* warm invitation; do NOT invent attractions."
+   "if the description is empty/noise, write a _generic_ warm invitation; do NOT invent attractions."
 3. **Stricter QA editor** — explicit price/destination/geography checks, not vague "don't hallucinate."
 4. **Deterministic image overlay** — `_overlay_from_facts(facts)` builds the overlay text
    (`"Barbacoas · 2 días · $40/persona"`) straight from DB facts. **The LLM is never trusted for the
    price burned onto the graphic** — a wrong price on an image is the worst failure mode.
 
 **Junk-source guard** (`marketing/views.py`):
+
 - `_looks_like_junk_description(text)` — flags empty / <15 chars / vowel-starved (<20% vowels) /
   many vowel-less "words". Catches placeholder junk, passes real Spanish prose.
 - `_assess_source_quality(facts)` — returns Spanish admin warnings for junk description + missing
@@ -127,7 +134,7 @@ same temp) rubber-stamped it.
 - **Anthropic = 403 from Venezuela.** Identical `403 "Request not allowed"` from "two providers" is
   the tell that the request never reached a model — it's a region gate, not a code bug. Retries
   can't fix a geo-block.
-- **The NVIDIA model *list* lies.** `GET integrate.api.nvidia.com/v1/models` returns 121 models, but
+- **The NVIDIA model _list_ lies.** `GET integrate.api.nvidia.com/v1/models` returns 121 models, but
   **many 404 on actual invocation** ("Function not found"). `deepseek-ai/deepseek-v3.2` /
   `deepseek-v4-pro` were never deployed → that was the chatbot deep-tier 404. **Always probe a
   candidate model with a real tool-call request before adopting it** (the copywriter needs
@@ -145,6 +152,12 @@ same temp) rubber-stamped it.
   decision. (To run diagnostics that touch Atlas, run them OFF the VPN.)
 - **`imageSrc` is a real array** in `TourismPackage` (the raw-doc preview just renders the list's
   `str()`); the source tool iterates it correctly.
+- **90s task timeout was too tight.** A 70B NVIDIA NIM generate pass (tool call + ~2500 chars of
+  Spanish) overran `max_execution_time=90` under load. The budget is now `MARKETING_TASK_TIMEOUT`
+  (default 180s) and a timeout is retryable in `_kickoff_marketing_with_retry` (it was previously
+  NOT in the signature list, so a timeout re-raised immediately → `status="error"` without even
+  trying the fallback model). Safe to raise because the crew runs in a background thread, not the
+  HTTP request path.
 
 ---
 
@@ -154,6 +167,12 @@ same temp) rubber-stamped it.
 "published"|"error"), instagramCaption, hashtags[], youtubeTitle, youtubeDescription,
 announcementHtml, imageOverlayText, composedImageUrl, dataQualityWarnings[], error,
 scheduledAt (nullable, Phase 2), createdAt, updatedAt`
+
+**`announcementHtml` holds PLAIN TEXT, not HTML.** The field name is kept (camelCase contract,
+must match the Next.js Prisma model) but the Next.js frontend manages its own tag elements, so it
+expects a clean string. The crew is prompted for plain text and the worker strips any stray tags
+via `_strip_html()` (regex tag removal + `html.unescape`) before persisting — defensive, since the
+LLM can ignore the prompt.
 
 Status endpoint returns: `status, instagramCaption, hashtags, youtubeTitle, youtubeDescription,
 announcementHtml, imageOverlayText, composedImageUrl, dataQualityWarnings, error`.
@@ -192,6 +211,7 @@ on `whatsapp_integration/.../run_reservation_scheduler.py` (mask credentials in 
 ## 11. Relevant env vars
 
 `NVIDIA_API_KEY` (shared with chatbot), `MARKETING_MODEL`, `MARKETING_FALLBACK_MODEL`,
-`MARKETING_TEMPERATURE`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_LOGO_PUBLIC_ID`,
+`MARKETING_TEMPERATURE`, `MARKETING_TASK_TIMEOUT` (per-agent budget, default 180s),
+`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_LOGO_PUBLIC_ID`,
 `INSTAGRAM_BUSINESS_ACCOUNT_ID` (Phase 2), `META_GRAPH_ACCESS_TOKEN` (or reuse
 `WHATSAPP_ACCESS_TOKEN`), `DJANGO_SERVICE_SECRET`.

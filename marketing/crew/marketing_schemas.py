@@ -18,7 +18,7 @@ class MarketingContentSchema(BaseModel):
     youtube_description: str = Field(
         ..., description="YouTube description in Spanish with factual package details.")
     announcement_html: str = Field(
-        ..., description="Short in-app announcement as safe HTML in Spanish.")
+        ..., description="Short in-app announcement as PLAIN TEXT in Spanish (no HTML tags; the frontend wraps it).")
     image_overlay_text: str = Field(
         ..., description="Short text to burn into the composed image (real price/destination).")
     chosen_image_url: str = Field(

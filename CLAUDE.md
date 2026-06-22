@@ -64,7 +64,7 @@ See `GEMINI.md` for detailed project context. This file covers working patterns 
 
 - **Chatbot fallback chain:** NVIDIA NIM (primary) → Gemini (fallback) → OpenAI (secondary)
 - **Marketing crew:** NVIDIA NIM only — primary `MARKETING_MODEL` (default `meta/llama-3.3-70b-instruct`) via `get_marketing_llm()`, fallback `MARKETING_FALLBACK_MODEL` (default `meta/llama-3.1-70b-instruct`) via `get_marketing_fallback_llm()`. **Anthropic/OpenAI/Gemini are intentionally NOT used for marketing:** Anthropic geo-blocks Venezuela (403 "Request not allowed") and the server runs on a VE IP. Both marketing models must be invocable **with tool-calling** (the copywriter calls a tool) — verify new models against `GET integrate.api.nvidia.com/v1/models` *and* a real tool-call probe, since the catalog over-reports (many listed IDs 404 on invocation).
-- **Robust execution:** Use `_kickoff_with_retry` wrapper for CrewAI tasks (includes provider switching, exponential backoff). Marketing uses `_kickoff_marketing_with_retry` (primary NVIDIA model → different NVIDIA fallback model).
+- **Robust execution:** Use `_kickoff_with_retry` wrapper for CrewAI tasks (includes provider switching, exponential backoff). Marketing uses `_kickoff_marketing_with_retry` (primary NVIDIA model → different NVIDIA fallback model); it retries on rate-limit/provider-failure **and on task timeout** (a slow 70B pass switches to the fallback model). Per-agent budget is `MARKETING_TASK_TIMEOUT` (default `180`s) — the crew runs in a background thread, so it is **not** bound by the ~30s Vercel gateway timeout.
 
 ### WhatsApp Constraints
 
@@ -140,7 +140,7 @@ The project is transitioning to a CrewAI multi-agent system with 5 phases:
 
 ## Feature: Marketing Content Generation (`marketing` app)
 
-A dedicated CrewAI pipeline that turns a single Mequedo `TourismPackage` or `Listing` into a reviewable, multi-channel marketing draft (Instagram caption + hashtags, YouTube title/description, in-app announcement HTML, and a branded image composed from real Cloudinary photos).
+A dedicated CrewAI pipeline that turns a single Mequedo `TourismPackage` or `Listing` into a reviewable, multi-channel marketing draft (Instagram caption + hashtags, YouTube title/description, in-app announcement text, and a branded image composed from real Cloudinary photos).
 
 - **Phase 1 (current) = generate → reviewable `draft`.** No auto-posting. A human reviews/edits/posts from the Next.js admin. Publishing to IG/YouTube is **deferred to Phase 2** (gated behind Meta App Review).
 - **LLM:** NVIDIA NIM only (see LLM Orchestration above) — Anthropic is geo-blocked from Venezuela.
@@ -153,9 +153,11 @@ A dedicated CrewAI pipeline that turns a single Mequedo `TourismPackage` or `Lis
 - `POST /api/marketing/generate/async/` — body `{ sourceType, sourceId }` → `202 { contentId, status }`
 - `GET /api/marketing/generate/status/?contentId=` → `{ status, instagramCaption, hashtags, youtubeTitle, youtubeDescription, announcementHtml, composedImageUrl, dataQualityWarnings }`
 
+**`announcementHtml` is plain text, not HTML.** The field name stays `announcementHtml` (camelCase data contract, must match the Next.js Prisma model), but its value is a clean string — the Next.js frontend wraps/renders its own tag elements. Prompts ask for plain text and the background worker strips any stray tags via `_strip_html()` as a defensive guarantee.
+
 **Grounding & guards (anti-hallucination):** marketing LLM runs at low temperature (`MARKETING_TEMPERATURE`, default `0.2`); prompts forbid inventing geography/activities or altering the price. The **image overlay text is built deterministically from DB facts** (never the LLM) so a wrong price is never burned onto the graphic. A **junk-source guard** (`_assess_source_quality` / `_looks_like_junk_description`) flags empty/gibberish descriptions and missing price/destination into `dataQualityWarnings` so the admin is told to fix the source data instead of trusting a vague auto-draft.
 
-**Required env:** `NVIDIA_API_KEY` (shared with the chatbot), `MARKETING_MODEL`, `MARKETING_FALLBACK_MODEL`, `INSTAGRAM_BUSINESS_ACCOUNT_ID` (Phase 2), `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_LOGO_PUBLIC_ID`; reuses `WHATSAPP_ACCESS_TOKEN` (or `META_GRAPH_ACCESS_TOKEN`) and `DJANGO_SERVICE_SECRET`.
+**Required env:** `NVIDIA_API_KEY` (shared with the chatbot), `MARKETING_MODEL`, `MARKETING_FALLBACK_MODEL`, `MARKETING_TEMPERATURE`, `MARKETING_TASK_TIMEOUT`, `INSTAGRAM_BUSINESS_ACCOUNT_ID` (Phase 2), `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_LOGO_PUBLIC_ID`; reuses `WHATSAPP_ACCESS_TOKEN` (or `META_GRAPH_ACCESS_TOKEN`) and `DJANGO_SERVICE_SECRET`.
 
 **Phase 2 seam (not yet active):** `InstagramService` (built, uncalled), the `scheduledAt` field, and the `run_marketing_scheduler` management-command stub (will poll `ScheduledTask` for `type: "marketing_publish"` → `InstagramService.publish_media`).
 

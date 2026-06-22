@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import json
 import logging
 import datetime
@@ -59,13 +60,16 @@ def _kickoff_marketing_with_retry(crew, inputs: dict, max_retries: int = 2) -> s
                 "410", "gone", "404", "not found", "500", "502", "503",
                 "bad gateway", "service unavailable", "not supported", "400",
             ))
+            # A task that overran max_execution_time often means the primary model
+            # was slow/stalled; retry (and let the fallback model take over).
+            is_timeout = "timed out" in error_str or "timeout" in error_str
 
             logger.warning(
                 f"Marketing fallback diagnostic (attempt {attempt}): "
                 f"rate_limit={is_rate_limit} provider_failure={is_provider_failure} "
-                f"snippet={error_str[:200]}")
+                f"timeout={is_timeout} snippet={error_str[:200]}")
 
-            if (is_rate_limit or is_provider_failure) and attempt < max_retries:
+            if (is_rate_limit or is_provider_failure or is_timeout) and attempt < max_retries:
                 if not fallback_injected:
                     fallback_injected = True
                     logger.warning(
@@ -123,7 +127,8 @@ def _assess_source_quality(facts) -> list:
             "La descripción de origen está vacía o no es válida. Mejora la "
             "descripción del paquete/anuncio para generar contenido de mayor calidad.")
     if facts.get("price_per_person") in (None, "", 0):
-        warnings.append("Falta el precio (pricePerPerson) en los datos de origen.")
+        warnings.append(
+            "Falta el precio (pricePerPerson) en los datos de origen.")
     if not facts.get("destination"):
         warnings.append("Falta el destino en los datos de origen.")
     return warnings
@@ -145,11 +150,25 @@ def _overlay_from_facts(facts) -> str:
     if price is not None:
         try:
             # Drop a trailing ".0" so 40.0 renders as "$40".
-            price_str = str(int(price)) if float(price) == int(price) else str(price)
+            price_str = str(int(price)) if float(
+                price) == int(price) else str(price)
             parts.append(f"${price_str}/persona")
         except (TypeError, ValueError):
             pass
     return " · ".join(parts)
+
+
+def _strip_html(text) -> str:
+    """Return plain text for the in-app announcement.
+
+    The Next.js frontend manages its own tag elements, so it expects a clean
+    string. The LLM is prompted for plain text, but this strips any stray HTML
+    tags (and unescapes entities) as a defensive guarantee.
+    """
+    if not text:
+        return ""
+    no_tags = re.sub(r"<[^>]+>", "", str(text))
+    return html.unescape(no_tags).strip()
 
 
 def _build_overlay_text(source_type: str, source_id: str) -> str:
@@ -197,12 +216,14 @@ def _run_marketing_in_background(content_id, source_type: str, source_id: str) -
             from marketing.crew.tools.marketing_source_tool import MarketingSourceTool
             facts = MarketingSourceTool().fetch_facts(source_type, source_id)
         except Exception as facts_err:
-            logger.warning(f"Could not fetch source facts post-generation: {facts_err}")
+            logger.warning(
+                f"Could not fetch source facts post-generation: {facts_err}")
             facts = None
 
         # Deterministic overlay (never trust the LLM for the price on the graphic);
         # fall back to the model's suggestion only if facts are unavailable.
-        overlay_text = _overlay_from_facts(facts) or content.get("image_overlay_text", "")
+        overlay_text = _overlay_from_facts(
+            facts) or content.get("image_overlay_text", "")
 
         # Junk-source guard: flag empty/gibberish descriptions etc. so the admin is
         # told to improve the source data instead of trusting a vague auto-draft.
@@ -227,7 +248,7 @@ def _run_marketing_in_background(content_id, source_type: str, source_id: str) -
             "hashtags": content.get("hashtags", []),
             "youtubeTitle": content.get("youtube_title", ""),
             "youtubeDescription": content.get("youtube_description", ""),
-            "announcementHtml": content.get("announcement_html", ""),
+            "announcementHtml": _strip_html(content.get("announcement_html", "")),
             "imageOverlayText": overlay_text,
             "composedImageUrl": composed_image_url,
             "dataQualityWarnings": data_quality_warnings,

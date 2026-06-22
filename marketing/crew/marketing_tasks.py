@@ -22,7 +22,9 @@ def get_generate_content_task(agent) -> Task:
             - hashtags: up to 30 relevant hashtags (each starting with '#').
             - youtube_title: a catchy title, MAX 100 characters.
             - youtube_description: a factual, engaging description.
-            - announcement_html: a short in-app announcement as safe HTML.
+            - announcement_html: a short in-app announcement as PLAIN TEXT only.
+              Do NOT include any HTML tags (no <p>, <br>, <b>, etc.) — the frontend
+              renders the tags itself. Return a clean string.
             - image_overlay_text: short text containing a REAL price or destination.
             - chosen_image_url: ONE of the image URLs from the source (empty string if none).
 
@@ -64,6 +66,8 @@ def get_qa_marketing_task(agent, generate_task) -> Task:
             - Enforce hashtags count <= 30 (drop the least relevant if over).
             - Confirm image_overlay_text references the real price/destination only.
             - Confirm chosen_image_url is one of the source images (or empty string).
+            - announcement_html must be PLAIN TEXT: strip any HTML tags (<p>, <br>,
+              <b>, etc.) the copywriter may have added.
             - Ensure all user-facing text is in Venezuelan Spanish.
 
             Output the final, corrected content as the structured JSON schema.

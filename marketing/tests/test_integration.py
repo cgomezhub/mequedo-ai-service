@@ -170,6 +170,8 @@ class BackgroundWorkerTests(TestCase):
         set_fields = update["$set"]
         self.assertEqual(set_fields["status"], "draft")
         self.assertEqual(set_fields["instagramCaption"], "¡Vive Mérida!")
+        # announcementHtml is stored as plain text (frontend manages the tags).
+        self.assertEqual(set_fields["announcementHtml"], "Nuevo")
         self.assertEqual(set_fields["composedImageUrl"], "https://composed.url/x.jpg")
         # Overlay is built from facts (no ".0"), not from the LLM's "Mérida $45".
         self.assertEqual(set_fields["imageOverlayText"], "Mérida · 3 días · $45/persona")

@@ -1,7 +1,14 @@
+import os
+
 from crewai import Agent
 
 from chatbot.crew.llm_config import get_marketing_llm
 from .tools.marketing_source_tool import MarketingSourceTool
+
+# Per-agent execution budget. Runs in a background thread (not bound by the
+# Vercel ~30s gateway timeout), so a 70B NVIDIA NIM pass needs generous room;
+# 90s was too tight under load. Tune via env without a code change.
+MARKETING_TASK_TIMEOUT = int(os.getenv("MARKETING_TASK_TIMEOUT", "180"))
 
 
 def get_copywriter_agent() -> Agent:
@@ -10,7 +17,7 @@ def get_copywriter_agent() -> Agent:
         role="Mequedo Tourism Copywriter (Karen Marketing)",
         goal=(
             "Write persuasive AIDA marketing content (Instagram caption + hashtags, "
-            "YouTube title + description, in-app announcement HTML) EXCLUSIVELY in "
+            "YouTube title + description, in-app announcement text) EXCLUSIVELY in "
             "Venezuelan Spanish, grounded strictly in the MarketingSourceTool output."
         ),
         backstory=(
@@ -39,7 +46,7 @@ def get_copywriter_agent() -> Agent:
         allow_delegation=False,
         llm=get_marketing_llm(),
         max_iter=3,
-        max_execution_time=90,
+        max_execution_time=MARKETING_TASK_TIMEOUT,
         tools=[MarketingSourceTool()],
     )
 
@@ -71,6 +78,6 @@ def get_brand_qa_agent() -> Agent:
         allow_delegation=False,
         llm=get_marketing_llm(),
         max_iter=3,
-        max_execution_time=90,
+        max_execution_time=MARKETING_TASK_TIMEOUT,
         tools=[],
     )
