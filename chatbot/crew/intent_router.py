@@ -10,12 +10,18 @@ logger = logging.getLogger(__name__)
 
 
 class IntentSchema(BaseModel):
-    intent_type: str = Field(..., description="Classification: 'SEARCH_PROPERTIES', 'LAST_RESERVATION', or 'OUT_OF_SCOPE'.")
-    search_city: str | None = Field(None, description="Extracted city name for accommodation searches.")
-    search_max_price: int | None = Field(None, description="Extracted strict maximum price limit.")
-    search_guests: int | None = Field(None, description="Extracted guest count.")
-    search_bedrooms: int | None = Field(None, description="Extracted bedroom requirement.")
-    search_bathrooms: int | None = Field(None, description="Extracted bathroom requirement.")
+    intent_type: str = Field(
+        ..., description="Classification: 'SEARCH_PROPERTIES', 'LAST_RESERVATION', or 'OUT_OF_SCOPE'.")
+    search_city: str | None = Field(
+        None, description="Extracted city name for accommodation searches.")
+    search_max_price: int | None = Field(
+        None, description="Extracted strict maximum price limit.")
+    search_guests: int | None = Field(
+        None, description="Extracted guest count.")
+    search_bedrooms: int | None = Field(
+        None, description="Extracted bedroom requirement.")
+    search_bathrooms: int | None = Field(
+        None, description="Extracted bathroom requirement.")
 
 
 # --- Intent Classification Prompt ---
@@ -70,7 +76,8 @@ def _parse_intent_output(raw_output: str) -> IntentSchema:
         else:
             raise ValueError("No JSON block found")
     except Exception as e:
-        logger.warning(f"Failed to cleanly parse intent JSON: {e} - Raw: {raw_output}")
+        logger.warning(
+            f"Failed to cleanly parse intent JSON: {e} - Raw: {raw_output}")
         # Default fallback
         return IntentSchema(intent_type="OUT_OF_SCOPE")
 
@@ -86,7 +93,8 @@ def _call_nvidia(prompt: str, config: dict) -> str | None:
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key
         )
-        model_name = os.getenv("NVIDIA_FAST_MODEL", "meta/llama-3.1-70b-instruct")
+        model_name = os.getenv("NVIDIA_FAST_MODEL",
+                               "meta/llama-3.1-70b-instruct")
         response = client.chat.completions.create(
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
@@ -102,13 +110,13 @@ def _call_nvidia(prompt: str, config: dict) -> str | None:
 
 def _call_gemini(prompt: str, config: dict) -> str | None:
     """Direct call to Gemini API."""
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         return None
     try:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
-        model_name = os.getenv("GEMINI_FAST_MODEL", "gemini-1.5-flash-latest")
+        model_name = os.getenv("GOOGLE_FAST_MODEL", "google/gemma-4-31b-it")
         model = genai.GenerativeModel(model_name)
         response = model.generate_content(
             prompt,
@@ -166,12 +174,15 @@ def classify_intent_with_retry(user_message: str, max_retries: int = 2) -> Inten
             raw_output = call_fn(prompt, config)
             if raw_output:
                 intent = _parse_intent_output(raw_output)
-                logger.info(f"Intent Router: Classified as {intent.intent_type} via {provider_name}")
+                logger.info(
+                    f"Intent Router: Classified as {intent.intent_type} via {provider_name}")
                 return intent
             # Brief backoff before retry
             if attempt < max_retries:
                 _time.sleep(1)
-        logger.warning(f"Intent Router: {provider_name} exhausted {max_retries + 1} attempts, trying next provider.")
+        logger.warning(
+            f"Intent Router: {provider_name} exhausted {max_retries + 1} attempts, trying next provider.")
 
-    logger.error("Intent Router: All providers failed. Defaulting to OUT_OF_SCOPE.")
+    logger.error(
+        "Intent Router: All providers failed. Defaulting to OUT_OF_SCOPE.")
     return IntentSchema(intent_type="OUT_OF_SCOPE")

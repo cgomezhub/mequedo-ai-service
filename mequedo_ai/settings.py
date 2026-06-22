@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'chatbot',
     'whatsapp_integration',  # WhatsApp Cloud API integration
+    'marketing',  # Marketing content generation (Karen Growth)
 ]
 
 MIDDLEWARE = [

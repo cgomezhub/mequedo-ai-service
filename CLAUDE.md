@@ -10,9 +10,9 @@
 
 - **Framework:** Django + Django Rest Framework (DRF)
 - **AI Orchestration:** CrewAI (multi-agent system)
-- **LLMs:** OpenAI, NVIDIA AI Endpoints (Llama 3), Google Gemini
-- **Database:** MongoDB (listings, locations, tasks) + SQLite (Django)
-- **Key Integration:** WhatsApp Cloud API
+- **LLMs:** OpenAI, NVIDIA AI Endpoints (Llama 3), Google Gemini; **Claude Opus 4.8 (Anthropic, marketing crew only)**
+- **Database:** MongoDB (listings, locations, tasks, marketing content) + SQLite (Django)
+- **Key Integration:** WhatsApp Cloud API; Meta Graph / Instagram API (Phase 2), Cloudinary (image composition)
 
 See `GEMINI.md` for detailed project context. This file covers working patterns and architecture evolution.
 
@@ -62,8 +62,9 @@ See `GEMINI.md` for detailed project context. This file covers working patterns 
 
 ### LLM Orchestration
 
-- **Fallback chain:** NVIDIA NIM (primary) → Gemini (fallback) → OpenAI (secondary)
-- **Robust execution:** Use `_kickoff_with_retry` wrapper for CrewAI tasks (includes provider switching, exponential backoff).
+- **Chatbot fallback chain:** NVIDIA NIM (primary) → Gemini (fallback) → OpenAI (secondary)
+- **Marketing crew:** NVIDIA NIM only — primary `MARKETING_MODEL` (default `meta/llama-3.3-70b-instruct`) via `get_marketing_llm()`, fallback `MARKETING_FALLBACK_MODEL` (default `meta/llama-3.1-70b-instruct`) via `get_marketing_fallback_llm()`. **Anthropic/OpenAI/Gemini are intentionally NOT used for marketing:** Anthropic geo-blocks Venezuela (403 "Request not allowed") and the server runs on a VE IP. Both marketing models must be invocable **with tool-calling** (the copywriter calls a tool) — verify new models against `GET integrate.api.nvidia.com/v1/models` *and* a real tool-call probe, since the catalog over-reports (many listed IDs 404 on invocation).
+- **Robust execution:** Use `_kickoff_with_retry` wrapper for CrewAI tasks (includes provider switching, exponential backoff). Marketing uses `_kickoff_marketing_with_retry` (primary NVIDIA model → different NVIDIA fallback model).
 
 ### WhatsApp Constraints
 
@@ -137,16 +138,44 @@ The project is transitioning to a CrewAI multi-agent system with 5 phases:
 
 ---
 
+## Feature: Marketing Content Generation (`marketing` app)
+
+A dedicated CrewAI pipeline that turns a single Mequedo `TourismPackage` or `Listing` into a reviewable, multi-channel marketing draft (Instagram caption + hashtags, YouTube title/description, in-app announcement HTML, and a branded image composed from real Cloudinary photos).
+
+- **Phase 1 (current) = generate → reviewable `draft`.** No auto-posting. A human reviews/edits/posts from the Next.js admin. Publishing to IG/YouTube is **deferred to Phase 2** (gated behind Meta App Review).
+- **LLM:** NVIDIA NIM only (see LLM Orchestration above) — Anthropic is geo-blocked from Venezuela.
+- **Storage:** `MarketingContent` collection in the shared MongoDB (same `DATABASE_URL`). **Field names are camelCase and must stay identical to the Next.js Prisma model** so both sides read/write the same documents.
+- **Grounding:** All facts come from `MarketingSourceTool` (the crew's only source of truth). Never fabricate price, dates, inclusions, or amenities; omit missing fields.
+- **Images:** Composed from existing Cloudinary photos via URL transformations only — **never generate synthetic property images**, no video.
+- **Async pattern:** Mirrors `ChatbotAsyncView`/`ChatbotStatusView` — `X-Internal-Secret` guard, insert `processing` doc, run crew on a daemon thread, poll for `draft`/`error`.
+
+**Endpoints (internal, `X-Internal-Secret: $DJANGO_SERVICE_SECRET`):**
+- `POST /api/marketing/generate/async/` — body `{ sourceType, sourceId }` → `202 { contentId, status }`
+- `GET /api/marketing/generate/status/?contentId=` → `{ status, instagramCaption, hashtags, youtubeTitle, youtubeDescription, announcementHtml, composedImageUrl, dataQualityWarnings }`
+
+**Grounding & guards (anti-hallucination):** marketing LLM runs at low temperature (`MARKETING_TEMPERATURE`, default `0.2`); prompts forbid inventing geography/activities or altering the price. The **image overlay text is built deterministically from DB facts** (never the LLM) so a wrong price is never burned onto the graphic. A **junk-source guard** (`_assess_source_quality` / `_looks_like_junk_description`) flags empty/gibberish descriptions and missing price/destination into `dataQualityWarnings` so the admin is told to fix the source data instead of trusting a vague auto-draft.
+
+**Required env:** `NVIDIA_API_KEY` (shared with the chatbot), `MARKETING_MODEL`, `MARKETING_FALLBACK_MODEL`, `INSTAGRAM_BUSINESS_ACCOUNT_ID` (Phase 2), `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_LOGO_PUBLIC_ID`; reuses `WHATSAPP_ACCESS_TOKEN` (or `META_GRAPH_ACCESS_TOKEN`) and `DJANGO_SERVICE_SECRET`.
+
+**Phase 2 seam (not yet active):** `InstagramService` (built, uncalled), the `scheduledAt` field, and the `run_marketing_scheduler` management-command stub (will poll `ScheduledTask` for `type: "marketing_publish"` → `InstagramService.publish_media`).
+
+---
+
 ## Key Files & Directories
 
 | Path | Purpose |
 |------|---------|
 | `chatbot/views.py` | AI logic, caching, sanitization, guest firewall, async views |
 | `chatbot/crew/` | CrewAI agents, intent router, fallback config |
+| `chatbot/crew/llm_config.py` | LLM accessors incl. `get_marketing_llm()` (Claude Opus 4.8) |
 | `whatsapp_integration/views.py` | Webhook endpoints, instant ack logic |
 | `whatsapp_integration/message_handler.py` | Message parser, template router, button/list builder |
 | `whatsapp_integration/services.py` | WhatsApp Cloud API request sender |
 | `whatsapp_integration/management/commands/run_reservation_scheduler.py` | Background scheduler (credentials masked) |
+| `marketing/views.py` | Marketing async generate + status views, background worker, retry wrapper |
+| `marketing/services.py` | `CloudinaryImageComposer` (URL transforms), `InstagramService` (Phase 2) |
+| `marketing/crew/` | Marketing crew: schemas, `MarketingSourceTool`, agents, tasks, orchestrator |
+| `marketing/management/commands/run_marketing_scheduler.py` | Phase 2 publish scheduler (stub) |
 
 ---
 
@@ -167,6 +196,8 @@ When contributing to CrewAI workflows:
 
 - **Project Context:** See `GEMINI.md`
 - **Architecture Roadmap:** See `.agent/workflows/crewai_architecture_migration.md`
+- **Marketing Backend Workflow:** See `.agent/workflows/backend-marketing-workflow.md`
+- **Marketing AI Logic & Decisions:** See `.agent/agent-logic-context/markenting_AIagents_flow_context.md` (flow, LLM strategy, anti-hallucination guards, gotchas)
 - **Django Settings:** Check `settings.py` for LLM keys, MongoDB connection, WhatsApp config
 - **Logging Config:** Ensure `LOG_LEVEL` is set appropriately; sensitive data must be masked
 
