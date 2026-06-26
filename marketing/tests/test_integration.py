@@ -146,10 +146,12 @@ class BackgroundWorkerTests(TestCase):
         mock_db.get_collection.return_value = col
         mock_get_db.return_value = mock_db
 
+        real_image = "https://res.cloudinary.com/demo/image/upload/v1/x.jpg"
         # Clean source facts: deterministic overlay + no data-quality warnings.
         mock_facts.return_value = {
             "destination": "Mérida", "duration_days": 3, "price_per_person": 45.0,
             "description": "Tres días maravillosos en Mérida con todo incluido y guía.",
+            "images": [real_image],
         }
         mock_kickoff.return_value = json.dumps({
             "instagram_caption": "¡Vive Mérida!",
@@ -158,7 +160,7 @@ class BackgroundWorkerTests(TestCase):
             "youtube_description": "Tour",
             "announcement_html": "<p>Nuevo</p>",
             "image_overlay_text": "Mérida $45",
-            "chosen_image_url": "https://res.cloudinary.com/demo/image/upload/v1/x.jpg",
+            "chosen_image_url": real_image,
         })
         mock_composer.return_value.compose.return_value = "https://composed.url/x.jpg"
 
@@ -173,9 +175,52 @@ class BackgroundWorkerTests(TestCase):
         # announcementHtml is stored as plain text (frontend manages the tags).
         self.assertEqual(set_fields["announcementHtml"], "Nuevo")
         self.assertEqual(set_fields["composedImageUrl"], "https://composed.url/x.jpg")
+        # Composition runs over the DB image, never the raw LLM string.
+        self.assertEqual(
+            mock_composer.return_value.compose.call_args[0][0], real_image)
         # Overlay is built from facts (no ".0"), not from the LLM's "Mérida $45".
         self.assertEqual(set_fields["imageOverlayText"], "Mérida · 3 días · $45/persona")
         self.assertEqual(set_fields["dataQualityWarnings"], [])
+
+    @patch("marketing.crew.tools.marketing_source_tool.MarketingSourceTool.fetch_facts")
+    @patch("marketing.views.CloudinaryImageComposer")
+    @patch("marketing.views._kickoff_marketing_with_retry")
+    @patch("chatbot.crew.tools.search_accommodation.get_db")
+    def test_hallucinated_image_url_falls_back_to_db_image(
+            self, mock_get_db, mock_kickoff, mock_composer, mock_facts):
+        import json
+        from marketing.views import _run_marketing_in_background
+
+        col = MagicMock()
+        mock_db = MagicMock()
+        mock_db.get_collection.return_value = col
+        mock_get_db.return_value = mock_db
+
+        real_image = "https://res.cloudinary.com/carlosgomez/image/upload/v1773242952/jm9zmpz79bcf9sj5gqb9.png"
+        mock_facts.return_value = {
+            "destination": "Barbacoas", "duration_days": 2, "price_per_person": 10,
+            "description": "Dos días en Barbacoas con todo incluido y transporte.",
+            "images": [real_image],
+        }
+        mock_kickoff.return_value = json.dumps({
+            "instagram_caption": "¡Vive Barbacoas!",
+            "hashtags": ["#Barbacoas"],
+            "youtube_title": "Aventura",
+            "youtube_description": "Tour",
+            "announcement_html": "Nuevo",
+            "image_overlay_text": "Barbacoas $10",
+            # LLM hallucinated a non-existent public_id (the real bug observed).
+            "chosen_image_url": "https://res.cloudinary.com/carlosgomez/image/upload/v1781037712/is6bg9aynt0kz5asxbtb.jpg",
+        })
+        mock_composer.return_value.compose.return_value = "https://composed.url/real.jpg"
+
+        _run_marketing_in_background(ObjectId(), "package", str(ObjectId()))
+
+        # The hallucinated URL is discarded; composition runs over the DB image.
+        self.assertEqual(
+            mock_composer.return_value.compose.call_args[0][0], real_image)
+        set_fields = col.update_one.call_args[0][1]["$set"]
+        self.assertEqual(set_fields["composedImageUrl"], "https://composed.url/real.jpg")
 
     @patch("marketing.views._kickoff_marketing_with_retry")
     @patch("chatbot.crew.tools.search_accommodation.get_db")

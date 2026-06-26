@@ -137,10 +137,20 @@ class MarketingSourceTool(BaseTool):
         destination = None
         location_id = listing.get("locationId")
         if location_id is not None:
-            location = db.get_collection("Location").find_one(
-                {"_id": location_id}, {"city": 1})
-            if location:
-                destination = location.get("city")
+            # ``locationId`` may be stored as a string while ``Location._id`` is an
+            # ObjectId; query with the raw value coerced, mirroring the operator
+            # lookup. A malformed id yields no destination rather than aborting the
+            # whole fetch (and losing every other fact).
+            try:
+                loc_oid = (location_id if isinstance(location_id, ObjectId)
+                           else ObjectId(str(location_id)))
+            except Exception:
+                loc_oid = None
+            if loc_oid is not None:
+                location = db.get_collection("Location").find_one(
+                    {"_id": loc_oid}, {"city": 1})
+                if location:
+                    destination = location.get("city")
 
         return {
             "source_type": "listing",

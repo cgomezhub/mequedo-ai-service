@@ -16,9 +16,46 @@ from .services import CloudinaryImageComposer
 logger = logging.getLogger(__name__)
 load_dotenv()
 
+# Seconds to wait before re-running the crew after a NVIDIA NIM rate-limit (429).
+# The free-tier limit is per-minute, so a 1-2s backoff just re-trips it.
+_RATE_LIMIT_BACKOFF = int(os.getenv("MARKETING_RATE_LIMIT_BACKOFF", "30"))
+
+# Hard wall-clock budget for the WHOLE background job. CrewAI's per-agent
+# ``max_execution_time`` cannot interrupt a blocking SDK retry-sleep, so without
+# this cap a rate-limit storm leaves the doc stuck at ``status="processing"``
+# forever. When exceeded, the worker forces ``status="error"``.
+_JOB_TIMEOUT = int(os.getenv("MARKETING_JOB_TIMEOUT", "240"))
+
 
 def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _run_with_hard_timeout(fn, timeout_s: int):
+    """Run ``fn`` in a worker thread, raising ``TimeoutError`` if it overruns.
+
+    CrewAI/litellm retries can block uninterruptibly (a 429 backoff sleeps inside
+    a single call), so ``max_execution_time`` is not a reliable ceiling. This
+    bounds the whole job in wall-clock time; on timeout the worker thread is
+    abandoned (it is a daemon) and the caller forces a terminal ``error`` state.
+    """
+    result: dict = {}
+
+    def _target() -> None:
+        try:
+            result["value"] = fn()
+        except Exception as exc:  # noqa: BLE001 - re-raised on the caller thread
+            result["error"] = exc
+
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        raise TimeoutError(
+            f"Marketing job exceeded hard timeout of {timeout_s}s")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 def _kickoff_marketing_with_retry(crew, inputs: dict, max_retries: int = 2) -> str:
@@ -74,7 +111,13 @@ def _kickoff_marketing_with_retry(crew, inputs: dict, max_retries: int = 2) -> s
                     fallback_injected = True
                     logger.warning(
                         "Switching MarketingCrew agents to fast-tier fallback LLM.")
-                _time.sleep(2 ** attempt)
+                # A NVIDIA NIM rate limit is per-minute: a 1-2s backoff just
+                # re-trips the same window. Wait long enough for it to reset on a
+                # 429; keep the quick exponential backoff for other failures.
+                backoff = _RATE_LIMIT_BACKOFF if is_rate_limit else (2 ** attempt)
+                logger.warning(
+                    f"Marketing retry backoff: sleeping {backoff}s before attempt {attempt + 1}.")
+                _time.sleep(backoff)
             else:
                 raise
 
@@ -132,6 +175,28 @@ def _assess_source_quality(facts) -> list:
     if not facts.get("destination"):
         warnings.append("Falta el destino en los datos de origen.")
     return warnings
+
+
+def _select_image_url(chosen_image_url, facts) -> str:
+    """Pick the image to compose over from authoritative DB facts, never the LLM.
+
+    The crew's ``chosen_image_url`` is LLM output and can be hallucinated or
+    corrupted — a Cloudinary ``public_id`` is a random string the model may
+    silently invent (observed: a real photo ``jm9z…`` became a non-existent
+    ``is6b…`` → a 404 image URL shipped to the frontend). So only honour the
+    model's choice when it is an EXACT match for a real source image; otherwise
+    fall back to the first real image. Returns ``""`` when the source has none.
+    """
+    images = [str(u) for u in ((facts or {}).get("images") or []) if u]
+    if not images:
+        return ""
+    if chosen_image_url and chosen_image_url in images:
+        return chosen_image_url
+    if chosen_image_url:
+        logger.warning(
+            "Crew chosen_image_url is not among the source images "
+            "(likely hallucinated); falling back to the first real image.")
+    return images[0]
 
 
 def _overlay_from_facts(facts) -> str:
@@ -196,10 +261,13 @@ def _run_marketing_in_background(content_id, source_type: str, source_id: str) -
         from marketing.crew.marketing_orchestrator import MarketingCrew
 
         crew = MarketingCrew()
-        raw_output = _kickoff_marketing_with_retry(crew, {
-            "source_type": source_type,
-            "source_id": source_id,
-        })
+        raw_output = _run_with_hard_timeout(
+            lambda: _kickoff_marketing_with_retry(crew, {
+                "source_type": source_type,
+                "source_id": source_id,
+            }),
+            _JOB_TIMEOUT,
+        )
 
         try:
             content = json.loads(raw_output)
@@ -220,6 +288,11 @@ def _run_marketing_in_background(content_id, source_type: str, source_id: str) -
                 f"Could not fetch source facts post-generation: {facts_err}")
             facts = None
 
+        # Select the source photo deterministically from DB facts — never trust
+        # the LLM's chosen_image_url, which can hallucinate a non-existent
+        # Cloudinary public_id and produce a 404 composed URL.
+        image_url = _select_image_url(chosen_image_url, facts)
+
         # Deterministic overlay (never trust the LLM for the price on the graphic);
         # fall back to the model's suggestion only if facts are unavailable.
         overlay_text = _overlay_from_facts(
@@ -234,10 +307,10 @@ def _run_marketing_in_background(content_id, source_type: str, source_id: str) -
                 f"warnings: {data_quality_warnings}")
 
         composed_image_url = ""
-        if chosen_image_url and overlay_text:
+        if image_url and overlay_text:
             try:
                 composed_image_url = CloudinaryImageComposer().compose(
-                    chosen_image_url, overlay_text) or ""
+                    image_url, overlay_text) or ""
             except Exception as compose_err:
                 logger.warning(
                     f"Image composition failed (non-fatal): {compose_err}")
@@ -289,6 +362,10 @@ class GenerateContentAsyncView(APIView):
     Inserts a ``processing`` ``MarketingContent`` doc, dispatches the crew on a
     daemon thread, and returns 202 with the new ``contentId`` immediately.
     """
+
+    # Internal, secret-guarded endpoint — exempt from the public anon throttle so
+    # polling is never masked by a DRF 429 (see GenerateContentStatusView).
+    throttle_classes: list = []
 
     def post(self, request, *args, **kwargs):
         secret_key = os.getenv("DJANGO_SERVICE_SECRET")
@@ -355,6 +432,11 @@ class GenerateContentAsyncView(APIView):
 
 class GenerateContentStatusView(APIView):
     """GET /api/marketing/generate/status/?contentId= — poll a generation job."""
+
+    # Polled in a tight loop by the Next.js admin; the anon 10/min throttle would
+    # otherwise 429 the poller before the draft is ready. Secret context is
+    # enforced upstream by the proxy, and reads are side-effect free.
+    throttle_classes: list = []
 
     def get(self, request, *args, **kwargs):
         content_id = request.query_params.get("contentId", "")
