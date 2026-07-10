@@ -5,9 +5,10 @@ from typing import List
 class MarketingContentSchema(BaseModel):
     """Structured, channel-ready marketing draft for a single Mequedo source.
 
-    Used as ``output_json`` on the final QA task (mirrors ``IntentSchema``'s role
-    in the chatbot crew). Every field must be grounded in the MarketingSourceTool
-    output — no invented prices, dates, amenities, or inclusions.
+    Used as ``output_json`` on the copywriter's generate task (mirrors
+    ``IntentSchema``'s role in the chatbot crew). Every field must be grounded in
+    the MarketingSourceTool output — no invented prices, dates, amenities, or
+    inclusions.
     """
     instagram_caption: str = Field(
         ..., description="AIDA Instagram caption in Venezuelan Spanish, <= 2200 chars.")

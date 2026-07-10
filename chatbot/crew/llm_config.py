@@ -93,12 +93,18 @@ MARKETING_FALLBACK_MODEL = os.getenv(
 # made llama-3.3 invent geography (e.g. a "beach" for inland Barbacoas) and drift
 # on the price. Tone/warmth comes from the prompt, not from temperature.
 MARKETING_TEMPERATURE = float(os.getenv("MARKETING_TEMPERATURE", "0.2"))
-# Keep the litellm/OpenAI-SDK retry layer SHALLOW. On a NVIDIA NIM rate-limit
-# (429) those retries sleep INSIDE a single blocking call that CrewAI's
-# ``max_execution_time`` cannot interrupt, so a deep retry layer turns a
-# transient 429 into a multi-minute hang. Crew-level retry/backoff is handled
+# NO litellm/OpenAI-SDK retries. On a NVIDIA NIM rate-limit (429) or stall those
+# retries sleep INSIDE a single blocking call that CrewAI's ``max_execution_time``
+# cannot interrupt, so any SDK retry layer turns a transient failure into a
+# multi-minute hang. Crew-level retry/backoff (and the model fallback) is handled
 # instead by ``_kickoff_marketing_with_retry``.
-MARKETING_LLM_NUM_RETRIES = int(os.getenv("MARKETING_LLM_NUM_RETRIES", "1"))
+MARKETING_LLM_NUM_RETRIES = int(os.getenv("MARKETING_LLM_NUM_RETRIES", "0"))
+# FAIL FAST per call. The free-tier llama-3.3-70b endpoint has been observed to
+# STALL (>90s for a small completion) while llama-3.1-70b answered in ~6s. A
+# healthy generation returns well under 30s, so anything slower is a stalled
+# call: cut it quickly so the retry wrapper can hand the job to the fallback
+# model with most of the MARKETING_JOB_TIMEOUT budget still available.
+MARKETING_LLM_TIMEOUT = int(os.getenv("MARKETING_LLM_TIMEOUT", "30"))
 
 
 def _build_marketing_llm(model_name: str):
@@ -119,7 +125,7 @@ def _build_marketing_llm(model_name: str):
         api_key=os.getenv("NVIDIA_API_KEY"),
         temperature=MARKETING_TEMPERATURE,
         max_tokens=2000,
-        timeout=60,
+        timeout=MARKETING_LLM_TIMEOUT,
         num_retries=MARKETING_LLM_NUM_RETRIES,
     )
 

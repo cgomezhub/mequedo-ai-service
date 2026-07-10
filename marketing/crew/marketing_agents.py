@@ -3,16 +3,25 @@ import os
 from crewai import Agent
 
 from chatbot.crew.llm_config import get_marketing_llm
-from .tools.marketing_source_tool import MarketingSourceTool
 
 # Per-agent execution budget. Runs in a background thread (not bound by the
-# Vercel ~30s gateway timeout), so a 70B NVIDIA NIM pass needs generous room;
-# 90s was too tight under load. Tune via env without a code change.
-MARKETING_TASK_TIMEOUT = int(os.getenv("MARKETING_TASK_TIMEOUT", "180"))
+# Vercel ~30s gateway timeout). The agent has NO tools — the facts are injected
+# into its task by the worker — so it makes a single generation round-trip and
+# does not need room for a slow ReAct tool loop. Sized so one pass (plus the
+# output_json coercion call) plus a fallback-model retry fits under
+# MARKETING_JOB_TIMEOUT (240s). Tune via env without a code change.
+MARKETING_TASK_TIMEOUT = int(os.getenv("MARKETING_TASK_TIMEOUT", "90"))
 
 
 def get_copywriter_agent() -> Agent:
-    """Karen Marketing — Venezuelan tourism copywriter on Claude Opus 4.8."""
+    """Karen Marketing — Venezuelan tourism copywriter on NVIDIA NIM (Llama 3).
+
+    The crew's only agent. It receives the factual source record already fetched
+    and injected into its task (no tool call), then drafts and self-validates the
+    content in a single generation pass. Removing the ReAct tool round-trip — on
+    top of removing the separate QA editor — keeps the job inside the free-tier
+    NVIDIA NIM latency budget.
+    """
     return Agent(
         role="Mequedo Tourism Copywriter (Karen Marketing)",
         goal=(
@@ -45,39 +54,13 @@ def get_copywriter_agent() -> Agent:
         verbose=True,
         allow_delegation=False,
         llm=get_marketing_llm(),
-        max_iter=3,
-        max_execution_time=MARKETING_TASK_TIMEOUT,
-        tools=[MarketingSourceTool()],
-    )
-
-
-def get_brand_qa_agent() -> Agent:
-    """Brand/QA Editor — hallucination + brand-voice checker on Claude Opus 4.8."""
-    return Agent(
-        role="Mequedo Brand & QA Editor",
-        goal=(
-            "Reject any invented amenity, price, date, or inclusion not present in the "
-            "source facts; enforce the Instagram 2200-character limit and a hashtag "
-            "count of 30 or fewer; confirm the image overlay text references a real "
-            "price or destination; output the final validated structured JSON."
-        ),
-        backstory=(
-            "You are a meticulous Spanish-language brand editor for Mequedo. You compare "
-            "every claim in the draft against the factual source record and strip anything "
-            "unsupported. \n\n"
-            "VERIFICACIONES OBLIGATORIAS:\n"
-            "- PRECIO: el precio mencionado debe ser EXACTAMENTE el de los hechos. Si "
-            "difiere en cualquier dígito, corrígelo al precio real.\n"
-            "- GEOGRAFÍA: elimina toda mención de paisaje o actividad (playa, mar, montaña, "
-            "río, buceo, etc.) que NO aparezca literalmente en los hechos. Es un error grave.\n"
-            "- DESTINO: el destino debe coincidir exactamente con el de los hechos.\n"
-            "- Mantén el español venezolano y respeta los límites (IG ≤2200, hashtags ≤30).\n"
-            "You produce clean, final marketing JSON, free of hallucinations."
-        ),
-        verbose=True,
-        allow_delegation=False,
-        llm=get_marketing_llm(),
-        max_iter=3,
+        # No tools: the facts are injected into the task, so a single generation
+        # pass suffices. Keep max_iter tiny to avoid extra free-tier round-trips.
+        max_iter=2,
+        # No agent-level retries either (CrewAI default is 2): every retry layer
+        # multiplies a stalled primary call's cost before the crew-level wrapper
+        # can swap in the fallback model. The wrapper owns ALL retries.
+        max_retry_limit=0,
         max_execution_time=MARKETING_TASK_TIMEOUT,
         tools=[],
     )

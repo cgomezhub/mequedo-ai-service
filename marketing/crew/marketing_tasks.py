@@ -5,6 +5,14 @@ from .marketing_schemas import MarketingContentSchema
 
 
 def get_generate_content_task(agent) -> Task:
+    """Single-pass draft + self-validation, emitting the final structured JSON.
+
+    This is the crew's only task (the separate QA task was removed to fit the
+    free-tier NVIDIA NIM latency budget). The factual source record is injected
+    directly as ``{source_facts}`` — the copywriter makes no tool call — so it
+    just drafts and self-reviews its own draft against those facts before
+    returning.
+    """
     return Task(
         description=dedent("""
             Generate channel-ready marketing content for a single Mequedo source.
@@ -12,9 +20,10 @@ def get_generate_content_task(agent) -> Task:
             Source Type: {source_type}
             Source ID: {source_id}
 
-            STEP 1: Call the 'Mequedo Marketing Source Fetcher' tool with the exact
-            source_type and source_id above to retrieve the factual record. This is
-            your ONLY source of truth.
+            STEP 1: These are the ONLY facts you may use — your single source of
+            truth. Do not assume anything not listed here:
+
+            {source_facts}
 
             STEP 2: Using ONLY those facts, draft in Venezuelan Spanish:
             - instagram_caption: an AIDA caption (Atención, Interés, Deseo, Acción),
@@ -39,44 +48,26 @@ def get_generate_content_task(agent) -> Task:
               Do NOT invent attractions to fill the gap.
             - If a field is missing from the source, omit it; do not fabricate.
             - Everything user-facing must be in Venezuelan Spanish.
+
+            STEP 3 (SELF-REVIEW before finalizing): re-read your draft against the
+            facts and correct it in place:
+            - Every price equals the EXACT source price — no drift in any digit.
+            - Delete any landscape/activity (beach, sea, mountain, river, diving,
+              snow, etc.) NOT literally in the facts — this is the most common error.
+            - The destination matches the source destination exactly.
+            - instagram_caption <= 2200 characters; hashtags count <= 30.
+            - image_overlay_text references the real price/destination only.
+            - chosen_image_url is one of the source images (or an empty string).
+            - announcement_html is PLAIN TEXT — strip any HTML tags you added.
+
+            Return ONLY the final corrected content as the structured JSON schema.
         """),
         expected_output=(
-            "A complete Spanish marketing draft covering Instagram caption + hashtags, "
-            "YouTube title + description, announcement HTML, image overlay text, and a "
-            "chosen image URL — all grounded strictly in the source facts."
+            "The final validated marketing content as JSON matching MarketingContentSchema: "
+            "Instagram caption + hashtags, YouTube title + description, announcement text, "
+            "image overlay text, and a chosen image URL — grounded strictly in the source "
+            "facts, free of hallucinations, and within all channel limits."
         ),
         agent=agent,
-    )
-
-
-def get_qa_marketing_task(agent, generate_task) -> Task:
-    return Task(
-        description=dedent("""
-            Critically review the copywriter's marketing draft against the factual
-            source record it was built from.
-
-            VALIDATION CHECKLIST:
-            - Reject/remove any amenity, price, date, inclusion, or destination NOT
-              present in the source facts.
-            - PRICE: confirm every price equals the EXACT source price; correct any drift.
-            - GEOGRAPHY: delete any landscape/activity (beach, sea, mountain, river,
-              diving, etc.) not literally in the facts — this is the most common error.
-            - DESTINATION: must match the source destination exactly.
-            - Enforce instagram_caption <= 2200 characters (trim if needed).
-            - Enforce hashtags count <= 30 (drop the least relevant if over).
-            - Confirm image_overlay_text references the real price/destination only.
-            - Confirm chosen_image_url is one of the source images (or empty string).
-            - announcement_html must be PLAIN TEXT: strip any HTML tags (<p>, <br>,
-              <b>, etc.) the copywriter may have added.
-            - Ensure all user-facing text is in Venezuelan Spanish.
-
-            Output the final, corrected content as the structured JSON schema.
-        """),
-        expected_output=(
-            "The final validated marketing content as JSON matching MarketingContentSchema, "
-            "free of hallucinations and within all channel limits."
-        ),
-        agent=agent,
-        context=[generate_task],
         output_json=MarketingContentSchema,
     )

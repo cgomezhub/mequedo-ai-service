@@ -26,12 +26,23 @@ _RATE_LIMIT_BACKOFF = int(os.getenv("MARKETING_RATE_LIMIT_BACKOFF", "30"))
 # forever. When exceeded, the worker forces ``status="error"``.
 _JOB_TIMEOUT = int(os.getenv("MARKETING_JOB_TIMEOUT", "240"))
 
+# Hard wall-clock budget for ONE kickoff attempt. Verified empirically: the
+# ``timeout``/``num_retries`` knobs on the CrewAI ``LLM`` do NOT reliably reach
+# the underlying HTTP call (a stalled NVIDIA NIM request was observed blocking
+# ~300s and then being retried by the OpenAI client despite timeout=30,
+# num_retries=0). This cap is enforced with the same thread-join pattern as
+# ``_run_with_hard_timeout`` so a stalled primary model is abandoned quickly and
+# the fallback model still has most of MARKETING_JOB_TIMEOUT left. A healthy
+# attempt (fact sheet already injected, no tool calls) completes in well under
+# a minute, so 75s only triggers on a genuinely stalled endpoint.
+_ATTEMPT_TIMEOUT = int(os.getenv("MARKETING_ATTEMPT_TIMEOUT", "75"))
+
 
 def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _run_with_hard_timeout(fn, timeout_s: int):
+def _run_with_hard_timeout(fn, timeout_s: int, label: str = "job"):
     """Run ``fn`` in a worker thread, raising ``TimeoutError`` if it overruns.
 
     CrewAI/litellm retries can block uninterruptibly (a 429 backoff sleeps inside
@@ -52,10 +63,28 @@ def _run_with_hard_timeout(fn, timeout_s: int):
     worker.join(timeout_s)
     if worker.is_alive():
         raise TimeoutError(
-            f"Marketing job exceeded hard timeout of {timeout_s}s")
+            f"Marketing {label} exceeded hard timeout of {timeout_s}s")
     if "error" in result:
         raise result["error"]
     return result.get("value")
+
+
+def _generation_is_empty(raw_output) -> bool:
+    """True when the crew output is unusable: non-JSON or a blank caption.
+
+    NVIDIA NIM free-tier models occasionally return the JSON skeleton with
+    empty strings for every text field (observed with the copywriter task:
+    hashtags + image URL filled, ``instagram_caption`` and every other text
+    field ``""``). Such an output must count as a FAILED attempt so the retry
+    wrapper regenerates it, instead of persisting a blank ``draft``.
+    """
+    try:
+        data = json.loads(raw_output)
+    except (json.JSONDecodeError, TypeError):
+        return True
+    if not isinstance(data, dict):
+        return True
+    return not str(data.get("instagram_caption") or "").strip()
 
 
 def _kickoff_marketing_with_retry(crew, inputs: dict, max_retries: int = 2) -> str:
@@ -73,6 +102,11 @@ def _kickoff_marketing_with_retry(crew, inputs: dict, max_retries: int = 2) -> s
     fallback_injected = False
 
     for attempt in range(max_retries + 1):
+        if attempt > 0:
+            # A timed-out attempt leaves a zombie worker thread still running the
+            # old crew's kickoff; rebuild the crew so the retry never shares
+            # mutable Agent/Task state with that abandoned thread.
+            crew = type(crew)()
         # Log which model each agent is actually using so a primary-model failure
         # is immediately distinguishable from a fallback-model failure.
         active_models = [getattr(getattr(a, "llm", None), "model", "unknown")
@@ -81,7 +115,19 @@ def _kickoff_marketing_with_retry(crew, inputs: dict, max_retries: int = 2) -> s
             f"Marketing kickoff attempt {attempt}: agents using models={active_models}")
         try:
             override = get_marketing_fallback_llm() if fallback_injected else None
-            return crew.kickoff(inputs, llm_override=override)
+            # Cap each attempt ourselves: SDK-level timeout knobs do not reliably
+            # reach the HTTP call, so a stalled model would otherwise eat the
+            # whole job budget before the fallback model ever ran.
+            result = _run_with_hard_timeout(
+                lambda: crew.kickoff(inputs, llm_override=override),
+                _ATTEMPT_TIMEOUT,
+                label=f"kickoff attempt {attempt}",
+            )
+            if _generation_is_empty(result):
+                raise ValueError(
+                    "empty generation: model returned blank/non-JSON content "
+                    f"(snippet: {str(result)[:150]!r})")
+            return result
         except Exception as e:
             last_exception = e
             error_str = (str(e) + " " + repr(e)).lower()
@@ -100,13 +146,18 @@ def _kickoff_marketing_with_retry(crew, inputs: dict, max_retries: int = 2) -> s
             # A task that overran max_execution_time often means the primary model
             # was slow/stalled; retry (and let the fallback model take over).
             is_timeout = "timed out" in error_str or "timeout" in error_str
+            # A syntactically-fine but content-empty generation (blank caption)
+            # is a model glitch, not a code bug: regenerate on the other model.
+            is_empty_generation = "empty generation" in error_str
 
             logger.warning(
                 f"Marketing fallback diagnostic (attempt {attempt}): "
                 f"rate_limit={is_rate_limit} provider_failure={is_provider_failure} "
-                f"timeout={is_timeout} snippet={error_str[:200]}")
+                f"timeout={is_timeout} empty={is_empty_generation} "
+                f"snippet={error_str[:200]}")
 
-            if (is_rate_limit or is_provider_failure or is_timeout) and attempt < max_retries:
+            if (is_rate_limit or is_provider_failure or is_timeout
+                    or is_empty_generation) and attempt < max_retries:
                 if not fallback_injected:
                     fallback_injected = True
                     logger.warning(
@@ -259,12 +310,27 @@ def _run_marketing_in_background(content_id, source_type: str, source_id: str) -
 
     try:
         from marketing.crew.marketing_orchestrator import MarketingCrew
+        from marketing.crew.tools.marketing_source_tool import MarketingSourceTool
+
+        # Read the authoritative facts ONCE, up front. They are injected into the
+        # copywriter's task (so the agent needs no slow tool round-trip) AND reused
+        # below for the deterministic overlay, image selection, and quality flags.
+        source_tool = MarketingSourceTool()
+        try:
+            facts = source_tool.fetch_facts(source_type, source_id)
+        except Exception as facts_err:
+            logger.warning(f"Could not fetch source facts: {facts_err}")
+            facts = None
+
+        source_facts = source_tool.format_facts(
+            facts) if facts else "NO_SOURCE_FOUND"
 
         crew = MarketingCrew()
         raw_output = _run_with_hard_timeout(
             lambda: _kickoff_marketing_with_retry(crew, {
                 "source_type": source_type,
                 "source_id": source_id,
+                "source_facts": source_facts,
             }),
             _JOB_TIMEOUT,
         )
@@ -277,16 +343,6 @@ def _run_marketing_in_background(content_id, source_type: str, source_id: str) -
             content = {}
 
         chosen_image_url = content.get("chosen_image_url", "")
-
-        # Read the authoritative facts ONCE, then derive both the deterministic
-        # overlay text and the data-quality warnings from them.
-        try:
-            from marketing.crew.tools.marketing_source_tool import MarketingSourceTool
-            facts = MarketingSourceTool().fetch_facts(source_type, source_id)
-        except Exception as facts_err:
-            logger.warning(
-                f"Could not fetch source facts post-generation: {facts_err}")
-            facts = None
 
         # Select the source photo deterministically from DB facts — never trust
         # the LLM's chosen_image_url, which can hallucinate a non-existent

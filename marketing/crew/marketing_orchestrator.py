@@ -1,5 +1,5 @@
-from .marketing_tasks import get_generate_content_task, get_qa_marketing_task
-from .marketing_agents import get_copywriter_agent, get_brand_qa_agent
+from .marketing_tasks import get_generate_content_task
+from .marketing_agents import get_copywriter_agent
 import os
 import logging
 
@@ -15,19 +15,22 @@ logger = logging.getLogger(__name__)
 class MarketingCrew:
     """CrewAI orchestrator for marketing content generation.
 
-    Shaped like ``MequedoCrew``: builds the copywriter + QA editor agents and a
-    chained generate -> QA task flow, then runs ``kickoff`` returning the
-    validated ``MarketingContentSchema`` JSON for a single source document.
+    Single-agent flow: the copywriter drafts and self-validates the content in one
+    pass, returning the ``MarketingContentSchema`` JSON for a single source
+    document. The QA editor was removed because a second sequential 70B pass on
+    the free-tier NVIDIA NIM endpoint blew past the hard job timeout, and its
+    guarantees (correct price on the graphic, valid image URL, HTML stripping,
+    data-quality flags) are already enforced deterministically in ``views.py``.
+    Grounding now rests on the anti-hallucination prompt + those guards + human
+    review of the resulting ``draft``.
     """
 
     def __init__(self) -> None:
         self.copywriter = get_copywriter_agent()
-        self.editor = get_brand_qa_agent()
-        self.agents = [self.copywriter, self.editor]
+        self.agents = [self.copywriter]
 
         self.generate_task = get_generate_content_task(self.copywriter)
-        self.qa_task = get_qa_marketing_task(self.editor, self.generate_task)
-        self.tasks = [self.generate_task, self.qa_task]
+        self.tasks = [self.generate_task]
 
     def setup_crew(self) -> Crew:
         return Crew(
@@ -54,7 +57,7 @@ class MarketingCrew:
         crew = self.setup_crew()
         try:
             result = crew.kickoff(inputs=inputs)
-            # Prefer the structured JSON output of the final QA task when present.
+            # Prefer the copywriter task's structured JSON output when present.
             output = getattr(result, "json_dict", None)
             if output:
                 import json

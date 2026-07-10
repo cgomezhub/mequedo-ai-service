@@ -59,6 +59,15 @@ class MarketingSourceTool(BaseTool):
             logger.error(f"MarketingSourceTool DB failure: {e}")
             return None
 
+    def format_facts(self, facts: dict) -> str:
+        """Public: render a facts dict as the LLM fact sheet.
+
+        Lets the background worker fetch facts once and inject the fact sheet
+        directly into the copywriter's task, so the agent needs no tool call
+        (removing a slow ReAct round-trip on the free-tier NVIDIA NIM endpoint).
+        """
+        return self._format_facts(facts)
+
     def _run(self, source_type: str, source_id: str) -> str:
         source_type = (source_type or "").strip().lower()
         if source_type not in ("package", "listing"):
