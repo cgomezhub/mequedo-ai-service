@@ -161,4 +161,5 @@ worker: python manage.py run_reservation_scheduler
     "message": "Busco casa en Lechería"
   }
   ```
-- **WhatsApp Webhook:** Use the `test_whatsapp_webhook.sh` script to simulate incoming webhook events.
+- **WhatsApp Webhook (fake payload):** Use the `test_whatsapp_webhook.sh` script to simulate incoming webhook events against local `runserver` — good for parser/handler logic, but doesn't exercise real Meta auth or template sends.
+- **WhatsApp Webhook (real end-to-end):** See `.agent/workflows/whatsapp-local-testing-workflow.md` for exposing local `runserver` via Cloudflare Tunnel and routing one real phone number's traffic to it via Meta's per-number webhook override, without touching the production webhook.

@@ -200,6 +200,7 @@ When contributing to CrewAI workflows:
 - **Project Context:** See `GEMINI.md`
 - **Architecture Roadmap:** See `.agent/workflows/crewai_architecture_migration.md`
 - **Marketing Backend Workflow:** See `.agent/workflows/backend-marketing-workflow.md`
+- **WhatsApp Local Testing:** See `.agent/workflows/whatsapp-local-testing-workflow.md` (Cloudflare Tunnel setup, per-number webhook override, System User token requirement, template placeholder-count gotchas)
 - **Marketing AI Logic & Decisions:** See `.agent/agent-logic-context/markenting_AIagents_flow_context.md` (flow, LLM strategy, anti-hallucination guards, gotchas)
 - **Django Settings:** Check `settings.py` for LLM keys, MongoDB connection, WhatsApp config
 - **Logging Config:** Ensure `LOG_LEVEL` is set appropriately; sensitive data must be masked

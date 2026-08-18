@@ -11,6 +11,9 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -39,7 +42,8 @@ ALLOWED_HOSTS = [
     'ai-api.mequedo.app',  # Tu nuevo subdominio para la IA
     '.railway.app',        # Permitir subdominios de Railway
     'ai-whatsapp.mequedo.app',  # Tu nuevo túnel de Cloudflare
-    'hxvvm-38-248-171-181.run.pinggy-free.link'
+    'whatsapp-test.mequedo.app',  # Túnel Cloudflare fijo para pruebas locales de webhook
+    'hxvvm-38-248-171-181.run.pinggy-free.link',
 ]
 
 if RAILWAY_URL:
@@ -47,6 +51,11 @@ if RAILWAY_URL:
 
 if RAILWAY_PUBLIC_DOMAIN:
     ALLOWED_HOSTS.append(RAILWAY_PUBLIC_DOMAIN)
+
+if DEBUG:
+    # Allow ngrok tunnels for local webhook testing (subdomain rotates each
+    # session on the free tier, so a wildcard avoids re-editing this file).
+    ALLOWED_HOSTS.append('.ngrok-free.app')
 
 # Es buena práctica confiar en el dominio de despliegue para evitar problemas de CSRF.
 CSRF_TRUSTED_ORIGINS = [
@@ -212,14 +221,17 @@ LOGGING = {
         'django': {
             'handlers': ['console'],
             'level': 'INFO',
+            'propagate': False,
         },
         'chatbot': {  # Tu app específica
             'handlers': ['console'],
             'level': LOG_LEVEL,
+            'propagate': False,
         },
         'whatsapp_integration': {  # WhatsApp integration
             'handlers': ['console'],
             'level': LOG_LEVEL,
+            'propagate': False,
         },
     },
     'root': {

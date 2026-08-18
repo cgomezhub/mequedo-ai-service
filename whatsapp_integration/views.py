@@ -156,8 +156,6 @@ class SendReservationRequestView(APIView):
 
         try:
             data = request.data
-            print("Data", data)
-
             # 1. Validar datos requeridos
             required_fields = ["hostPhoneNumber", "guestName", "hostName",
                                "listingTitle", "dates", "reservationId", "callbackUrl"]
@@ -176,12 +174,142 @@ class SendReservationRequestView(APIView):
                 )
 
             to_number = data.get("hostPhoneNumber")
-            guest_name = data.get("guestName")
             host_name = data.get("hostName")
             listing_title = data.get("listingTitle")
             dates = data.get("dates")
             reservation_id = data.get("reservationId")
             callback_url = data.get("callbackUrl")
+            listing_image = data.get(
+                "listingMainImage") or "https://res.cloudinary.com/carlosgomez/image/upload/v1773242952/jm9zmpz79bcf9sj5gqb9.png"
+
+            # 2. Instanciar servicio
+            from .services import WhatsAppService
+            whatsapp_service = WhatsAppService()
+
+            # 3. Construir componentes de la plantilla
+            components = []
+            # Add Header Image if present
+            if listing_image:
+                components.append({
+                    "type": "header",
+                    "parameters": [
+                        {
+                            "type": "image",
+                            "image": {"link": listing_image}
+                        }
+                    ]
+                })
+
+            # Add Body parameters
+            # The approved "reservation_request_notice" template body has
+            # exactly 3 placeholders: {{1}} host name, {{2}} listing,
+            # {{3}} dates — it does not include the guest's name.
+            components.append({
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": host_name},
+                    {"type": "text", "text": listing_title},
+                    {"type": "text", "text": dates},
+                ]
+            })
+
+            # 4. send  WhatsApp message
+            # A failure here must not block step 5 (scheduling the expiration
+            # task) — the reservation still needs to auto-expire even if the
+            # guest was never notified, so we log and keep going instead of
+            # returning early.
+            whatsapp_sent = False
+            try:
+                whatsapp_sent = whatsapp_service.send_template_message(
+                    to=to_number,
+                    template_name="reservation_request_notice",
+                    language_code="es",
+                    components=components
+                )
+            except Exception as send_err:
+                logger.error(
+                    f"❌ Error sending WhatsApp message to {to_number}: {send_err}")
+
+            if whatsapp_sent:
+                logger.info(f"✅ Reservation notification sent to {to_number}")
+            else:
+                logger.error(
+                    f"❌ WhatsApp service reported failure sending to {to_number}")
+
+            # 5. Schedule Expiration Task (MongoDB)
+            if scheduled_tasks_collection is not None and reservation_id and callback_url:
+                try:
+                    expiration_hours = float(
+                        os.getenv("RESERVATION_EXPIRATION_HOURS", "1"))
+                    expiration_time = datetime.utcnow() + timedelta(hours=expiration_hours)
+
+                    task_doc = {
+                        "type": "reservation_expiration",
+                        "reservationId": reservation_id,
+                        "callbackUrl": callback_url,
+                        "executeAt": expiration_time,
+                        "status": "pending",
+                        "createdAt": datetime.utcnow()
+                    }
+                    scheduled_tasks_collection.insert_one(task_doc)
+                    logger.info(
+                        f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
+                except Exception as db_err:
+                    logger.error(f"❌ Failed to schedule task: {db_err}")
+
+            return Response({
+                "status": "success" if whatsapp_sent else "partial_failure",
+                "message": "Notification sent and task scheduled" if whatsapp_sent
+                else "Task scheduled, but WhatsApp notification failed to send",
+                "whatsappSent": whatsapp_sent,
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"❌ Error in SendReservationRequestView: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SendReservationRequestApprovedView(APIView):
+    """
+    Vista para enviar notificaciones de solicitud de reserva vía WhatsApp.
+    Es llamada por el backend de Next.js cuando se crea una reserva.
+    """
+
+    def post(self, request, *args, **kwargs):
+        # Validate Internal Secret
+        secret_key = os.getenv("DJANGO_SERVICE_SECRET")
+        if secret_key and request.headers.get("X-Internal-Secret") != secret_key:
+            logger.warning(
+                f"⛔ Unauthorized access attempt to SendReservationRequestView from {request.META.get('REMOTE_ADDR')}")
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            data = request.data
+           
+
+            # 1. Validar datos requeridos
+            required_fields = ["guestPhoneNumber", "guestName", "hostName",
+                               "listingTitle", "dates", "reservationId"]
+
+            missing_or_invalid = [
+                field for field in required_fields 
+                if field not in data or data[field] in [None, "", "null", "undefined"]
+            ]
+
+            if missing_or_invalid:
+                logger.warning(
+                    f"⚠️ Missing or invalid fields in SendReservationRequestView: {missing_or_invalid}")
+                return Response(
+                    {"error": f"Missing or invalid fields: {', '.join(missing_or_invalid)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            to_number = data.get("guestPhoneNumber")
+            guest_name = data.get("guestName")
+            host_name = data.get("hostName")
+            listing_title = data.get("listingTitle")
+            dates = data.get("dates")
+            reservation_id = data.get("reservationId")
             listing_image = data.get(
                 "listingMainImage") or "https://res.cloudinary.com/carlosgomez/image/upload/v1773242952/jm9zmpz79bcf9sj5gqb9.png"
 
@@ -215,48 +343,36 @@ class SendReservationRequestView(APIView):
             })
 
             # 4. send  WhatsApp message
-            print("Sending reservation request to", to_number)
-            print("Reservation request components", components)
-            success = whatsapp_service.send_template_message(
-                to=to_number,
-                template_name="reservation_request_notice",
-                language_code="es",
-                components=components
-            )
+            # A failure here must not surface as a hard error to the caller —
+            # the reservation was already approved on the Next.js side, so we
+            # log and report the outcome instead of returning early.
+            whatsapp_sent = False
+            try:
+                whatsapp_sent = whatsapp_service.send_template_message(
+                    to=to_number,
+                    template_name="reservation_request_approved_notice",
+                    language_code="es",
+                    components=components
+                )
+            except Exception as send_err:
+                logger.error(
+                    f"❌ Error sending WhatsApp message to {to_number}: {send_err}")
 
-            if success:
+            if whatsapp_sent:
                 logger.info(f"✅ Reservation notification sent to {to_number}")
+            else:
+                logger.error(
+                    f"❌ WhatsApp service reported failure sending to {to_number}")
 
-            # 5. Schedule Expiration Task (MongoDB)
-            if scheduled_tasks_collection is not None and reservation_id and callback_url:
-                try:
-                    expiration_hours = float(
-                        os.getenv("RESERVATION_EXPIRATION_HOURS", "1"))
-                    expiration_time = datetime.utcnow() + timedelta(hours=expiration_hours)
-
-                    task_doc = {
-                        "type": "reservation_expiration",
-                        "reservationId": reservation_id,
-                        "callbackUrl": callback_url,
-                        "executeAt": expiration_time,
-                        "status": "pending",
-                        "createdAt": datetime.utcnow()
-                    }
-                    scheduled_tasks_collection.insert_one(task_doc)
-                    logger.info(
-                        f"⏰ Scheduled expiration task for reservation {reservation_id} at {expiration_time}")
-                except Exception as db_err:
-                    logger.error(f"❌ Failed to schedule task: {db_err}")
-
-            return Response({"status": "success", "message": "Notification sent and task scheduled"}, status=status.HTTP_200_OK)
-            # else:
-            #     return Response(
-            #         {"error": "Failed to send WhatsApp message"},
-            #         status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            #     )
+            return Response({
+                "status": "success" if whatsapp_sent else "partial_failure",
+                "message": "Notification sent" if whatsapp_sent
+                else "WhatsApp notification failed to send",
+                "whatsappSent": whatsapp_sent,
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
-            logger.error(f"❌ Error in SendReservationRequestView: {str(e)}")
+            logger.error(f"❌ Error in SendReservationRequestApprovedView: {str(e)}")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -278,7 +394,6 @@ class SendPaymentRequestView(APIView):
 
         try:
             data = request.data
-            print("Payment request data", data)
             # 1. Validar datos requeridos
             required_fields = ["guestPhoneNumber", "guestName", "hostName",
                                "listingTitle", "dates", "reservationId", "callbackUrl"]
@@ -334,15 +449,25 @@ class SendPaymentRequestView(APIView):
                 ]
             })
             # 4. send WhatsApp message
-            success = whatsapp_service.send_template_message(
-                to=to_number,
-                template_name="reservation_payment_notice",
-                language_code="es",
-                components=components
-            )
+            # A failure here must not block step 5 (scheduling the expiration
+            # task) — log and keep going instead of returning early.
+            whatsapp_sent = False
+            try:
+                whatsapp_sent = whatsapp_service.send_template_message(
+                    to=to_number,
+                    template_name="reservation_payment_notice",
+                    language_code="es",
+                    components=components
+                )
+            except Exception as send_err:
+                logger.error(
+                    f"❌ Error sending WhatsApp message to {to_number}: {send_err}")
 
-            if success:
+            if whatsapp_sent:
                 logger.info(f"✅ Reservation notification sent to {to_number}")
+            else:
+                logger.error(
+                    f"❌ WhatsApp service reported failure sending to {to_number}")
 
             # 5. Schedule Expiration Task (MongoDB)
             if scheduled_tasks_collection is not None and reservation_id and callback_url:
@@ -365,12 +490,12 @@ class SendPaymentRequestView(APIView):
                 except Exception as db_err:
                     logger.error(f"❌ Failed to schedule task: {db_err}")
 
-            return Response({"status": "success", "message": "Notification sent and task scheduled"}, status=status.HTTP_200_OK)
-            # else:
-            #     return Response(
-            #         {"error": "Failed to send WhatsApp message"},
-            #         status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            #     )
+            return Response({
+                "status": "success" if whatsapp_sent else "partial_failure",
+                "message": "Notification sent and task scheduled" if whatsapp_sent
+                else "Task scheduled, but WhatsApp notification failed to send",
+                "whatsappSent": whatsapp_sent,
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
             logger.error(f"❌ Error in SendPaymentRequestView: {str(e)}")
