@@ -222,7 +222,7 @@ class SendReservationRequestView(APIView):
             try:
                 whatsapp_sent = whatsapp_service.send_template_message(
                     to=to_number,
-                    template_name="reservation_request_notice",
+                    template_name="reservation_request_notification",
                     language_code="es",
                     components=components
                 )
